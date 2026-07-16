@@ -37,10 +37,74 @@ let lastSources = {};
 let tableFilter = "all";
 let tableQuery = "";
 let tableSort = "match";
-let discardedIds = new Set();
-let savedIds = new Set();
+let tableStatusFilter = "all";
 
 const PROFILE_STORAGE_KEY = "jobsearch_profile_v1";
+const ROW_STATES_KEY = "jobsearch_row_states_v1";
+
+function loadRowStates() {
+  try {
+    const raw = localStorage.getItem(ROW_STATES_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === "object" ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+let rowStates = loadRowStates();
+
+function persistRowStates() {
+  try { localStorage.setItem(ROW_STATES_KEY, JSON.stringify(rowStates)); } catch (e) {}
+}
+
+function getRowState(id) {
+  const s = rowStates[id];
+  if (!s || typeof s !== "object") return { visited: false, status: null };
+  return {
+    visited: !!s.visited,
+    status: s.status === "interested" || s.status === "not_interested" ? s.status : null,
+  };
+}
+
+function setRowState(id, patch) {
+  const prev = getRowState(id);
+  const next = { ...prev, ...patch };
+  if (!next.visited && !next.status) delete rowStates[id];
+  else rowStates[id] = next;
+  persistRowStates();
+  return next;
+}
+
+function rowClassNames(id, tier) {
+  const s = getRowState(id);
+  const classes = [`tier-${tier}`];
+  if (s.visited) classes.push("visited");
+  if (s.status === "interested") classes.push("interested");
+  if (s.status === "not_interested") classes.push("not-interested");
+  return classes.join(" ");
+}
+
+function updateRowAfterStateChange(tr, id) {
+  if (tableStatusFilter !== "all") {
+    applyTableView();
+    return;
+  }
+  applyRowStateToTr(tr, id);
+}
+
+function applyRowStateToTr(tr, id) {
+  if (!tr) return;
+  const tier = tr.className.match(/tier-(high|mid|low)/)?.[1] || "low";
+  tr.className = rowClassNames(id, tier);
+  const viewBtn = tr.querySelector(".act-btn.view");
+  if (viewBtn) viewBtn.classList.toggle("visited", getRowState(id).visited);
+  const interestBtn = tr.querySelector("[data-interest]");
+  if (interestBtn) interestBtn.classList.toggle("active", getRowState(id).status === "interested");
+  const notBtn = tr.querySelector("[data-not-interest]");
+  if (notBtn) notBtn.classList.toggle("active", getRowState(id).status === "not_interested");
+}
+
 function saveProfileToStorage(obj) {
   try { localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(obj)); } catch (e) {}
 }
@@ -468,8 +532,6 @@ function setStatus({ summary, detail, tone = "idle", expandLog = false }) {
 function clearResultsTable() {
   currentJobs = [];
   displayJobs = [];
-  discardedIds = new Set();
-  savedIds = new Set();
   lastSources = {};
   resultsBody.textContent = "";
   emptyNote.textContent = "Buscando ofertas…";
@@ -612,10 +674,30 @@ function bindFilterChips() {
   });
 }
 
+function bindStatusFilterChips() {
+  document.querySelectorAll("#statusFilterChips .fchip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      document.querySelectorAll("#statusFilterChips .fchip").forEach((c) => c.classList.remove("active"));
+      chip.classList.add("active");
+      tableStatusFilter = chip.dataset.status;
+      applyTableView();
+    });
+  });
+}
+
 function applyTableView() {
   let list = currentJobs.map((job, idx) => ({ job, idx }));
   if (tableFilter !== "all") {
     list = list.filter(({ job }) => sourceLabel(job.source).key === tableFilter);
+  }
+  if (tableStatusFilter !== "all") {
+    list = list.filter(({ job, idx }) => {
+      const s = getRowState(jobId(job, idx));
+      if (tableStatusFilter === "pending") return !s.visited && !s.status;
+      if (tableStatusFilter === "interested") return s.status === "interested";
+      if (tableStatusFilter === "not_interested") return s.status === "not_interested";
+      return true;
+    });
   }
   if (tableQuery) {
     list = list.filter(({ job }) => {
@@ -663,8 +745,9 @@ function renderTableRows(list) {
     const company = job.company || "Empresa no indicada";
     const pub = formatPublishedParts(job.published_at);
     const id = jobId(job, idx);
+    const rowState = getRowState(id);
     const tr = document.createElement("tr");
-    tr.className = `tier-${tier}` + (discardedIds.has(id) ? " discarded" : "");
+    tr.className = rowClassNames(id, tier);
     tr.dataset.jobIdx = String(idx);
     tr.dataset.jobId = id;
     tr.innerHTML = `
@@ -686,11 +769,11 @@ function renderTableRows(list) {
       <td>
         <div class="actions-cell">
           ${job.url
-            ? `<a class="act-btn view" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" title="Ver oferta">↗</a>`
+            ? `<a class="act-btn view${rowState.visited ? " visited" : ""}" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-visit="${escapeHtml(id)}" title="${rowState.visited ? "Ya visitada" : "Ver oferta"}">↗</a>`
             : `<button type="button" class="act-btn view" disabled title="Sin link">↗</button>`}
           <button type="button" class="act-btn cover" data-cover-gen="${idx}" title="Cover letter">CL</button>
-          <button type="button" class="act-btn save ${savedIds.has(id) ? "active" : ""}" data-save="${escapeHtml(id)}" title="Guardar">★</button>
-          <button type="button" class="act-btn discard" data-discard="${escapeHtml(id)}" title="Descartar">✕</button>
+          <button type="button" class="act-btn interest${rowState.status === "interested" ? " active" : ""}" data-interest="${escapeHtml(id)}" title="Me interesa">★</button>
+          <button type="button" class="act-btn not-interest${rowState.status === "not_interested" ? " active" : ""}" data-not-interest="${escapeHtml(id)}" title="No me interesa">✕</button>
         </div>
       </td>`;
     frag.appendChild(tr);
@@ -700,8 +783,6 @@ function renderTableRows(list) {
 
 function renderJobs(jobs, sources) {
   currentJobs = jobs || [];
-  discardedIds = new Set();
-  savedIds = new Set();
   show(document.getElementById("step2Empty"), "");
   renderSourceStatus(sources || {});
 
@@ -973,22 +1054,33 @@ document.querySelectorAll("thead th.sortable").forEach((th) => {
 });
 
 resultsBody.addEventListener("click", async (e) => {
-  const saveBtn = e.target.closest("[data-save]");
-  if (saveBtn) {
-    const id = saveBtn.getAttribute("data-save");
-    if (savedIds.has(id)) savedIds.delete(id);
-    else savedIds.add(id);
-    saveBtn.classList.toggle("active");
+  const visitLink = e.target.closest("[data-visit]");
+  if (visitLink) {
+    const id = visitLink.getAttribute("data-visit");
+    setRowState(id, { visited: true });
+    updateRowAfterStateChange(visitLink.closest("tr"), id);
     return;
   }
 
-  const discardBtn = e.target.closest("[data-discard]");
-  if (discardBtn) {
-    const id = discardBtn.getAttribute("data-discard");
-    const tr = discardBtn.closest("tr");
-    if (discardedIds.has(id)) discardedIds.delete(id);
-    else discardedIds.add(id);
-    tr.classList.toggle("discarded");
+  const interestBtn = e.target.closest("[data-interest]");
+  if (interestBtn) {
+    const id = interestBtn.getAttribute("data-interest");
+    const tr = interestBtn.closest("tr");
+    const s = getRowState(id);
+    if (s.status === "interested") setRowState(id, { status: null });
+    else setRowState(id, { status: "interested" });
+    updateRowAfterStateChange(tr, id);
+    return;
+  }
+
+  const notBtn = e.target.closest("[data-not-interest]");
+  if (notBtn) {
+    const id = notBtn.getAttribute("data-not-interest");
+    const tr = notBtn.closest("tr");
+    const s = getRowState(id);
+    if (s.status === "not_interested") setRowState(id, { status: null });
+    else setRowState(id, { status: "not_interested" });
+    updateRowAfterStateChange(tr, id);
     return;
   }
 
@@ -1221,6 +1313,7 @@ document.getElementById("authSessionsBody").addEventListener("click", async (e) 
 updatePulse(null);
 updateFooterNote();
 bindFilterChips();
+bindStatusFilterChips();
 refreshAuthSessions();
 
 // ─── API Key de Gemini ───────────────────────────────────────────────────────

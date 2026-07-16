@@ -410,7 +410,25 @@ tbody tr {
   transition: background .12s ease, opacity .2s ease;
 }
 tbody tr:hover { background: #FAFAF8; }
-tbody tr.discarded { opacity: .32; }
+tbody tr.visited:not(.interested):not(.not-interested) { opacity: .72; }
+tbody tr.visited:not(.interested):not(.not-interested) .job-title {
+  font-weight: 500;
+  color: var(--ink-600);
+}
+tbody tr.interested { background: var(--green-soft); }
+tbody tr.interested:hover { background: #E3F3E8; }
+tbody tr.interested.tier-high,
+tbody tr.interested.tier-mid,
+tbody tr.interested.tier-low { box-shadow: inset 4px 0 0 var(--green); }
+tbody tr.not-interested {
+  opacity: .38;
+  background: #F8F8F6;
+}
+tbody tr.not-interested .job-title {
+  text-decoration: line-through;
+  color: var(--ink-400);
+}
+tbody tr.not-interested .job-company { color: var(--ink-400); }
 tbody tr.tier-high { box-shadow: inset 3px 0 0 var(--green); }
 tbody tr.tier-mid { box-shadow: inset 3px 0 0 var(--amber); }
 tbody tr.tier-low { box-shadow: inset 3px 0 0 var(--coral); }
@@ -468,10 +486,18 @@ td { padding: 12px 14px; vertical-align: top; color: var(--ink-900); }
 }
 .act-btn:hover { border-color: #C9CDC6; color: var(--ink-900); }
 .act-btn:disabled { opacity: .5; cursor: wait; }
-.act-btn.save.active { background: var(--amber-soft); border-color: var(--amber); color: var(--amber); }
-.act-btn.discard:hover { background: var(--coral-soft); border-color: var(--coral); color: var(--coral); }
+.act-btn.interest.active { background: var(--green-soft); border-color: var(--green); color: var(--green); }
+.act-btn.not-interest.active { background: var(--coral-soft); border-color: var(--coral); color: var(--coral); }
+.act-btn.not-interest:hover { background: var(--coral-soft); border-color: var(--coral); color: var(--coral); }
 .act-btn.view { background: var(--blue); border-color: var(--blue); color: #fff; }
 .act-btn.view:hover { background: #264C71; }
+.act-btn.view.visited {
+  background: var(--panel);
+  border-color: var(--ink-400);
+  color: var(--ink-400);
+}
+.act-btn.view.visited:hover { background: #F3F4F2; color: var(--ink-600); }
+.fchip-status.active { background: var(--ink-600); border-color: var(--ink-600); }
 .act-btn.cover { font-size: 11px; font-weight: 600; width: auto; padding: 0 8px; }
 
 .empty-note {
