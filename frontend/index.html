@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Job Scraper &amp; Matcher</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="brand-mark">AI</span>
+        AI Job Scraper &amp; Matcher
+      </div>
+      <span class="brand-tags">LATAM · Multi-fuente · Gemini</span>
+    </div>
+    <div class="topbar-right">
+      <div class="source-pulse" id="sourcePulse" title="Estado de fuentes tras la última búsqueda">
+        <div class="pulse-dots" id="pulseDots"></div>
+        <span id="pulseLabel">Sin corrida aún</span>
+      </div>
+      <button type="button" id="apiKeyBadge" class="api-key-badge hidden" title="Configurar API Key de Gemini">
+        <span id="apiKeyBadgeIcon">⚠</span>
+        <span id="apiKeyBadgeLabel">Sin API Key</span>
+      </button>
+      <div class="profile-chip" id="profileChip">
+        <span class="avatar" id="profileAvatar">—</span>
+        <span id="profileChipName">Sin perfil</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <aside class="sidebar" id="sidebar">
+      <button type="button" class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="Colapsar panel">⟨</button>
+      <div class="sidebar-scroll">
+
+        <div class="step" id="step1">
+          <div class="step-head" id="step1Toggle" data-toggle="step1" role="button" tabindex="0">
+            <div class="step-num" id="step1Num">1</div>
+            <div class="step-label">Perfil JSON</div>
+            <div class="step-summary" id="step1Summary"></div>
+            <div class="step-chevron">▾</div>
+          </div>
+          <div class="step-body" id="step1Body">
+            <div class="upload-row">
+              <label class="btn-ghost-sm file-label">
+                Subir CV (PDF)
+                <input id="cvFile" type="file" accept="application/pdf,.pdf" hidden />
+              </label>
+              <label class="btn-ghost-sm file-label">
+                JSON manual
+                <input id="jsonFile" type="file" accept="application/json,.json" hidden />
+              </label>
+            </div>
+            <div class="upload-row">
+              <button id="btnProcess" type="button" class="btn-ghost-sm">
+                <span id="processLabel">Procesar CV</span>
+                <span id="processSpinner" class="spinner hidden"></span>
+              </button>
+              <button id="btnLoadJson" type="button" class="btn-ghost-sm">Cargar JSON</button>
+              <button id="btnTemplate" type="button" class="btn-ghost-sm">Plantilla</button>
+            </div>
+            <p id="step1Error" class="msg msg-error hidden"></p>
+            <p id="step1Ok" class="msg msg-ok hidden"></p>
+            <div id="profileStatus" class="json-status idle">Sin perfil válido todavía.</div>
+            <div class="field">
+              <label for="profileJson">Editor JSON</label>
+              <textarea id="profileJson" class="input" rows="6" placeholder='{"name":"…","roles":[],"skills":[]}'></textarea>
+            </div>
+            <div class="upload-row">
+              <button id="btnValidate" type="button" class="btn-ghost-sm">Validar</button>
+              <button id="btnDownload" type="button" class="btn-ghost-sm">Descargar</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="step open" id="step2">
+          <div class="step-head" data-toggle="step2" role="button" tabindex="0">
+            <div class="step-num">2</div>
+            <div class="step-label">Filtros y búsqueda</div>
+            <div class="step-summary" id="step2Summary">Configura fuentes</div>
+            <div class="step-chevron">▾</div>
+          </div>
+          <div class="step-body" id="filtersPanel">
+
+            <div class="field" id="authSessionsPanel">
+              <div class="field-head-row">
+                <label>Sesiones LinkedIn / Computrabajo</label>
+                <button id="btnRefreshAuth" type="button" class="icon-btn" title="Actualizar estado">↻</button>
+              </div>
+              <p class="field-hint" id="authBrowserHint"></p>
+              <p class="field-hint">Abre Edge/Chrome con perfil JobSearch. Te logueás una vez; no se guarda password.</p>
+              <div id="authSessionsBody"></div>
+            </div>
+
+            <div class="field">
+              <label for="filterQueries">Textos de búsqueda</label>
+              <textarea id="filterQueries" class="input" rows="3" placeholder="Uno por línea&#10;Backend Developer&#10;.NET Engineer"></textarea>
+              <div class="field-hint">Vacío = roles del perfil. Se busca cada término por separado.</div>
+            </div>
+
+            <div class="field">
+              <label for="filterLocations">Ubicaciones</label>
+              <textarea id="filterLocations" class="input" rows="2" placeholder="Buenos Aires&#10;Remoto LATAM"></textarea>
+              <div class="field-hint">Vacío = ubicación del perfil / país.</div>
+            </div>
+
+            <div class="row-2 field">
+              <div>
+                <label for="filterSalaryMin">Salario mín. USD</label>
+                <input id="filterSalaryMin" class="input" type="number" min="0" step="100" placeholder="2000" />
+              </div>
+              <div>
+                <label for="filterSalaryMax">Salario máx. USD</label>
+                <input id="filterSalaryMax" class="input" type="number" min="0" step="100" placeholder="6000" />
+              </div>
+            </div>
+
+            <div class="field" data-ms="posted"></div>
+            <div class="field" data-ms="sources"></div>
+            <div class="row-2">
+              <div class="field" data-ms="experience"></div>
+              <div class="field" data-ms="workMode"></div>
+            </div>
+            <div class="field" data-ms="countries"></div>
+            <div class="row-2">
+              <div class="field" data-ms="postingLang"></div>
+              <div class="field" data-ms="requiredLang"></div>
+            </div>
+
+            <p id="step2Error" class="msg msg-error hidden"></p>
+            <p id="step2Empty" class="msg msg-warn hidden"></p>
+            <p id="step2Ok" class="msg msg-ok hidden"></p>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="btnSearch" type="button" class="btn-primary" disabled>
+          <span class="btn-icon">▶</span>
+          <span id="searchLabel" class="btn-text">Iniciar búsqueda</span>
+          <span id="searchSpinner" class="spinner hidden"></span>
+        </button>
+        <div class="footer-note" id="footerNote">Elegí fuentes y perfil</div>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <div class="status-strip" id="statusStrip">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusSummary"><strong>Listo</strong> · configurá el perfil e iniciá una búsqueda</span>
+        <span class="sep">|</span>
+        <span id="statusDetail">API: <code id="apiHint">http://127.0.0.1:8000</code></span>
+        <span class="chevron-right">▸</span>
+      </div>
+      <div class="log-panel" id="logPanel">
+        <div id="searchProgress"></div>
+        <div id="sourceStatus"></div>
+        <div class="source-tally" id="sourceTally"></div>
+      </div>
+
+      <div class="toolbar">
+        <button id="btnToggleFilters" type="button" class="fchip filters-toggle hidden" title="Mostrar panel de configuración">Filtros</button>
+        <div class="search-box">
+          <input id="tableSearch" type="search" placeholder="Buscar por puesto o empresa…" autocomplete="off" />
+        </div>
+        <div class="filter-chips" id="sourceFilterChips">
+          <button type="button" class="fchip active" data-filter="all">Todas</button>
+        </div>
+        <div class="toolbar-spacer"></div>
+        <select class="sort-select" id="sortSelect">
+          <option value="match">Ordenar: mayor match</option>
+          <option value="date">Ordenar: más reciente</option>
+          <option value="salary">Ordenar: mayor salario</option>
+        </select>
+        <span class="result-count"><strong id="visibleCount">0</strong> de <span id="totalCount">0</span> ofertas</span>
+      </div>
+
+      <div class="table-wrap" id="resultsWrap">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th>Puesto</th>
+              <th>Fuente</th>
+              <th>Ubicación</th>
+              <th class="sortable" data-sort="date">Publicado <span class="arrow">▾</span></th>
+              <th class="sortable" data-sort="salary">Salario USD <span class="arrow">▾</span></th>
+              <th>Requisitos</th>
+              <th class="sortable" data-sort="match">Match <span class="arrow">▾</span></th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+        <div class="empty-note" id="emptyNote">Sin resultados todavía. Configurá el perfil e iniciá una búsqueda.</div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<div id="apiKeyModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="apiKeyModalTitle">
+  <div class="modal-panel modal-panel--narrow">
+    <div class="modal-head">
+      <h3 id="apiKeyModalTitle">Configurar API Key de Gemini</h3>
+    </div>
+    <div class="modal-body">
+      <p class="modal-desc">
+        Esta app usa <strong>Google Gemini</strong> para procesar tu CV y generar cover letters.
+        No se encontró ninguna clave en el servidor.<br><br>
+        Ingresá tu <strong>GOOGLE_API_KEY</strong> de
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Google AI Studio</a>.
+        Solo se guardará en memoria mientras el servidor esté activo.
+      </p>
+      <div class="field" style="margin-top:1rem;">
+        <label for="apiKeyInput">API Key</label>
+        <input
+          id="apiKeyInput"
+          type="password"
+          class="input"
+          placeholder="AIza…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p id="apiKeyError" class="msg msg-error hidden"></p>
+      </div>
+      <div class="api-key-toggle">
+        <label>
+          <input type="checkbox" id="apiKeyShow" /> Mostrar clave
+        </label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span id="apiKeyStatus" class="api-key-status"></span>
+      <button id="btnSaveApiKey" type="button" class="btn-primary">
+        <span id="apiKeyBtnLabel">Guardar y continuar</span>
+        <span id="apiKeySpinner" class="spinner hidden"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="coverModal" class="modal">
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3 id="coverTitle">Cover Letter</h3>
+      <button id="btnCloseModal" type="button" class="icon-btn modal-close" aria-label="Cerrar">&times;</button>
+    </div>
+    <div class="modal-body">
+      <pre id="coverBody"></pre>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCopyCover" type="button" class="btn-ghost-sm light">Copiar</button>
+      <button id="btnCloseModal2" type="button" class="btn-primary modal-primary">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

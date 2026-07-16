@@ -1,0 +1,44 @@
+# ── Entorno Python ────────────────────────────────────────────────────────────
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Herramientas Python ───────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+
+# ── Playwright / sesiones ─────────────────────────────────────────────────────
+# Cookies e historial de sesiones (datos sensibles)
+playwright/.auth/*.json
+# Perfil completo del navegador (~31 MB, estado local)
+playwright/.auth/browser_profiles/
+playwright-report/
+test-results/
+
+# ── Datos personales ──────────────────────────────────────────────────────────
+# CVs procesados (pueden contener informacion personal)
+cv_data/
+
+# ── Setup local ───────────────────────────────────────────────────────────────
+.venv/.setup_done
+
+# ── Sistema operativo ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
