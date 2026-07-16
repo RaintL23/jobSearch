@@ -18,6 +18,40 @@ Para buscar en LinkedIn y Computrabajo con tu cuenta:
 
 Haz doble clic en `login.bat` y sigue las instrucciones.
 
+## Inicio rápido (macOS)
+
+**Requisito:** [Python 3.10+](https://www.python.org/downloads/) (`brew install python` también sirve).
+
+### 1. Primera vez — permisos
+
+En Terminal, desde la carpeta del proyecto:
+
+```bash
+chmod +x start.command login.command
+```
+
+### 2. Ejecutar la app
+
+Doble clic en `start.command` (o clic derecho → Abrir).
+
+Si macOS dice que no se puede abrir porque es de un desarrollador no identificado: **clic derecho → Abrir → Abrir**.
+
+Igual que en Windows: la primera vez instala dependencias (~2–5 min) y abre el navegador en http://127.0.0.1:8000.
+
+### 3. Sesiones LinkedIn / Computrabajo (opcional)
+
+Doble clic en `login.command` y elegí el sitio.
+
+En Mac se usa **Google Chrome** si está instalado; si no, Chromium de Playwright.
+
+### Checklist de validación en Mac
+
+1. `./start.command` arranca sin error y abre la UI.
+2. Subís un CV PDF y se genera el perfil JSON.
+3. (Opcional) `./login.command` → LinkedIn: se abre Chrome, te logueás, se guarda la sesión.
+4. Iniciás una búsqueda y aparecen ofertas en la tabla.
+5. Marcás ★ / ✕ / visitada y recargás: el estado se mantiene.
+
 ---
 
 ## Instalación manual (alternativa)
@@ -104,7 +138,7 @@ y `/static/app.js`.
 No guardamos contraseña. Por defecto se abre **Edge/Chrome con un perfil de JobSearch**
 (no cierra ni reinicia tu navegador diario). Te logueás una vez; después se reutiliza.
 
-**Opción fácil:** doble clic en `login.bat`.
+**Opción fácil:** doble clic en `login.bat` (Windows) o `login.command` (macOS).
 
 **Opción manual:**
 ```bash

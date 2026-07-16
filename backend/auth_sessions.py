@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,10 @@ from typing import Any
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from backend.config import get_settings
+
+_IS_MAC = sys.platform == "darwin"
+_IS_WIN = sys.platform == "win32"
+_IS_LINUX = sys.platform.startswith("linux")
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +88,11 @@ def session_path(site: str) -> Path:
 
 def preferred_system_channel(user_agent: str | None = None) -> str | None:
     """Devuelve 'msedge'/'chrome' si el ejecutable existe; si no, None."""
-    for ch in (detect_channel_from_ua(user_agent), "msedge", "chrome"):
+    # En macOS/Linux Chrome es lo habitual; en Windows probamos Edge primero vía UA.
+    order = (detect_channel_from_ua(user_agent), "chrome", "msedge")
+    if _IS_WIN:
+        order = (detect_channel_from_ua(user_agent), "msedge", "chrome")
+    for ch in order:
         if ch and _browser_exe(ch):
             return ch
     return None
@@ -119,42 +128,69 @@ def _local_app_data() -> Path:
 
 
 def _browser_exe(channel: str) -> Path | None:
-    local = _local_app_data()
     candidates: list[Path] = []
+    home = Path.home()
+
     if channel == "msedge":
-        candidates = [
-            local / "Microsoft" / "Edge" / "Application" / "msedge.exe",
-            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
-            / "Microsoft"
-            / "Edge"
-            / "Application"
-            / "msedge.exe",
-            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
-            / "Microsoft"
-            / "Edge"
-            / "Application"
-            / "msedge.exe",
-        ]
+        if _IS_WIN:
+            local = _local_app_data()
+            candidates = [
+                local / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+                / "Microsoft"
+                / "Edge"
+                / "Application"
+                / "msedge.exe",
+                Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+                / "Microsoft"
+                / "Edge"
+                / "Application"
+                / "msedge.exe",
+            ]
+        elif _IS_MAC:
+            candidates = [
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                home / "Applications" / "Microsoft Edge.app" / "Contents" / "MacOS" / "Microsoft Edge",
+            ]
+        elif _IS_LINUX:
+            for name in ("microsoft-edge", "microsoft-edge-stable", "msedge"):
+                which = shutil.which(name)
+                if which:
+                    candidates.append(Path(which))
         which = shutil.which("msedge")
         if which:
             candidates.insert(0, Path(which))
     else:
-        candidates = [
-            local / "Google" / "Chrome" / "Application" / "chrome.exe",
-            Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
-            / "Google"
-            / "Chrome"
-            / "Application"
-            / "chrome.exe",
-            Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
-            / "Google"
-            / "Chrome"
-            / "Application"
-            / "chrome.exe",
-        ]
+        if _IS_WIN:
+            local = _local_app_data()
+            candidates = [
+                local / "Google" / "Chrome" / "Application" / "chrome.exe",
+                Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+                / "Google"
+                / "Chrome"
+                / "Application"
+                / "chrome.exe",
+                Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"))
+                / "Google"
+                / "Chrome"
+                / "Application"
+                / "chrome.exe",
+            ]
+        elif _IS_MAC:
+            candidates = [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                home / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome",
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+            ]
+        elif _IS_LINUX:
+            for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+                which = shutil.which(name)
+                if which:
+                    candidates.append(Path(which))
         which = shutil.which("chrome") or shutil.which("google-chrome")
         if which:
             candidates.insert(0, Path(which))
+
     for path in candidates:
         if path and path.is_file():
             return path
@@ -162,6 +198,17 @@ def _browser_exe(channel: str) -> Path | None:
 
 
 def _user_data_dir(channel: str) -> Path:
+    home = Path.home()
+    if _IS_MAC:
+        support = home / "Library" / "Application Support"
+        if channel == "msedge":
+            return support / "Microsoft Edge"
+        return support / "Google" / "Chrome"
+    if _IS_LINUX:
+        config = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+        if channel == "msedge":
+            return config / "microsoft-edge"
+        return config / "google-chrome"
     local = _local_app_data()
     if channel == "msedge":
         return local / "Microsoft" / "Edge" / "User Data"
@@ -169,6 +216,14 @@ def _user_data_dir(channel: str) -> Path:
 
 
 def _process_names(channel: str) -> tuple[str, ...]:
+    if _IS_MAC:
+        if channel == "msedge":
+            return ("Microsoft Edge",)
+        return ("Google Chrome", "Chromium")
+    if _IS_LINUX:
+        if channel == "msedge":
+            return ("microsoft-edge", "msedge")
+        return ("chrome", "google-chrome", "chromium", "chromium-browser")
     if channel == "msedge":
         return ("msedge.exe",)
     return ("chrome.exe",)
@@ -186,14 +241,23 @@ def cdp_available(url: str | None = None) -> bool:
 def _kill_browser(channel: str) -> None:
     for name in _process_names(channel):
         try:
-            subprocess.run(
-                ["taskkill", "/IM", name, "/F"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            if _IS_WIN:
+                subprocess.run(
+                    ["taskkill", "/IM", name, "/F"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            else:
+                # killall / pkill por nombre de proceso (macOS / Linux)
+                subprocess.run(
+                    ["killall", name],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("taskkill %s: %s", name, exc)
+            logger.debug("kill browser %s: %s", name, exc)
     time.sleep(2.0)
 
 
@@ -270,14 +334,24 @@ def ensure_system_browser_cdp(
 def _browser_process_running(channel: str) -> bool:
     for name in _process_names(channel):
         try:
-            proc = subprocess.run(
-                ["tasklist", "/FI", f"IMAGENAME eq {name}"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if name.lower() in (proc.stdout or "").lower():
-                return True
+            if _IS_WIN:
+                proc = subprocess.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {name}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if name.lower() in (proc.stdout or "").lower():
+                    return True
+            else:
+                proc = subprocess.run(
+                    ["pgrep", "-x", name],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode == 0 and (proc.stdout or "").strip():
+                    return True
         except Exception:  # noqa: BLE001
             continue
     return False
