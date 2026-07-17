@@ -86,12 +86,73 @@ def session_path(site: str) -> Path:
     return AUTH_DIR / str(meta["file"])
 
 
-def preferred_system_channel(user_agent: str | None = None) -> str | None:
-    """Devuelve 'msedge'/'chrome' si el ejecutable existe; si no, None."""
-    # En macOS/Linux Chrome es lo habitual; en Windows probamos Edge primero vía UA.
-    order = (detect_channel_from_ua(user_agent), "chrome", "msedge")
+def _channel_hint_path(site: str) -> Path:
+    return AUTH_DIR / f"{site}.channel"
+
+
+def _auth_mode_hint_path(site: str) -> Path:
+    return AUTH_DIR / f"{site}.mode"
+
+
+def _save_auth_mode(site: str, mode: str) -> None:
+    """Recuerda de dónde salió la sesión para reutilizarla de la misma forma."""
+    try:
+        ensure_auth_dir()
+        _auth_mode_hint_path(site).write_text(mode, encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _load_auth_mode(site: str) -> str | None:
+    try:
+        path = _auth_mode_hint_path(site)
+        if path.is_file():
+            value = path.read_text(encoding="utf-8").strip()
+            return value or None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _save_channel_hint(site: str, channel: str) -> None:
+    """Recuerda qué navegador (chrome/msedge) se usó para loguearse en `site`,
+    para reutilizar el mismo en cada scrape (misma huella = misma sesión)."""
+    if channel not in ("chrome", "msedge"):
+        return
+    try:
+        ensure_auth_dir()
+        _channel_hint_path(site).write_text(channel, encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _load_channel_hint(site: str) -> str | None:
+    try:
+        path = _channel_hint_path(site)
+        if path.is_file():
+            value = path.read_text(encoding="utf-8").strip()
+            return value or None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def preferred_system_channel(
+    user_agent: str | None = None, *, site: str | None = None
+) -> str | None:
+    """
+    Devuelve 'msedge'/'chrome' si el ejecutable existe; si no, None.
+
+    Prioridad: 1) navegador con el que se inició sesión en `site` (persistido,
+    para no romper la sesión guardada usando un canal distinto), 2) el que
+    sugiera el User-Agent del cliente que llamó a la API, 3) default de
+    plataforma (Edge primero en Windows, Chrome en macOS/Linux).
+    """
+    hinted = _load_channel_hint(site) if site else None
+    detected = detect_channel_from_ua(user_agent)
+    order: tuple[str | None, ...] = (hinted, detected, "chrome", "msedge")
     if _IS_WIN:
-        order = (detect_channel_from_ua(user_agent), "msedge", "chrome")
+        order = (hinted, detected, "msedge", "chrome")
     for ch in order:
         if ch and _browser_exe(ch):
             return ch
@@ -107,19 +168,49 @@ def storage_state_for_scrape_source(source: str) -> str | None:
     return None
 
 
-def detect_channel_from_ua(user_agent: str | None) -> str:
-    """chrome | msedge según el User-Agent del cliente que abre JobSearch."""
+def dedicated_profile_for_scrape_source(source: str) -> tuple[str, str] | None:
+    """
+    Devuelve (canal, directorio) cuando la sesión pertenece al perfil JobSearch.
+
+    Las instalaciones anteriores no tienen el archivo ``*.mode``. En ese caso
+    reconocemos un perfil Chromium ya inicializado para migrarlas sin exigir
+    otro login.
+    """
+    site = next(
+        (key for key, meta in AUTH_SITES.items() if source in meta["used_by"]),
+        None,
+    )
+    if not site or not storage_state_for_scrape_source(source):
+        return None
+
+    mode = _load_auth_mode(site)
+    if mode and mode != "profile":
+        return None
+
+    channel = _load_channel_hint(site)
+    if channel not in ("chrome", "msedge"):
+        return None
+
+    profile = AUTH_DIR / "browser_profiles" / channel
+    initialized = (profile / "Local State").is_file() or (
+        profile / "Default" / "Preferences"
+    ).is_file()
+    if not initialized:
+        return None
+
+    if mode is None:
+        _save_auth_mode(site, "profile")
+    return channel, str(profile)
+
+
+def detect_channel_from_ua(user_agent: str | None) -> str | None:
+    """chrome | msedge según el User-Agent del cliente; None si no hay pista clara."""
     ua = (user_agent or "").lower()
     if "edg/" in ua or "edgios" in ua:
         return "msedge"
     if "chrome/" in ua or "chromium/" in ua:
         return "chrome"
-    # Windows: Edge suele estar instalado; preferimos Chrome si existe
-    if _browser_exe("chrome"):
-        return "chrome"
-    if _browser_exe("msedge"):
-        return "msedge"
-    return "chrome"
+    return None
 
 
 def _local_app_data() -> Path:
@@ -456,7 +547,7 @@ def session_status(site: str | None = None) -> dict[str, Any]:
 
 
 def cdp_status(*, channel: str | None = None, user_agent: str | None = None) -> dict[str, Any]:
-    ch = channel or detect_channel_from_ua(user_agent)
+    ch = channel or preferred_system_channel(user_agent=user_agent) or "chrome"
     return {
         "cdp_url": CDP_URL,
         "cdp_ready": cdp_available(),
@@ -474,6 +565,9 @@ def clear_session(site: str) -> dict[str, Any]:
     if path.exists():
         path.unlink()
         logger.info("Sesión eliminada: %s", path)
+    mode_path = _auth_mode_hint_path(site)
+    if mode_path.exists():
+        mode_path.unlink()
     return session_status(site)[site]
 
 
@@ -584,6 +678,9 @@ def _capture_via_persistent_profile(
 
             if already:
                 context.storage_state(path=str(path))
+                if exe_ok:
+                    _save_channel_hint(site, channel)
+                _save_auth_mode(site, "profile")
                 logger.info("Sesión %s ya activa en perfil JobSearch", label)
                 return {
                     **session_status(site)[site],
@@ -604,6 +701,9 @@ def _capture_via_persistent_profile(
                     "Completá el login en la ventana que se abrió; la próxima vez "
                     "no hará falta volver a loguearte."
                 )
+            if exe_ok:
+                _save_channel_hint(site, channel)
+            _save_auth_mode(site, "profile")
             return {
                 **session_status(site)[site],
                 "captured_from": "jobsearch_profile",
@@ -654,6 +754,8 @@ def _capture_via_cdp(
 
         if already:
             context.storage_state(path=str(path))
+            _save_channel_hint(site, channel)
+            _save_auth_mode(site, "system")
             logger.info("Ya había sesión en %s · capturada desde tu navegador", label)
             try:
                 page.close()
@@ -689,6 +791,8 @@ def _capture_via_cdp(
                 "Completá el login en la pestaña que se abrió en tu navegador."
             )
 
+        _save_channel_hint(site, channel)
+        _save_auth_mode(site, "system")
         return {
             **session_status(site)[site],
             "captured_from": "system_browser",
@@ -734,6 +838,7 @@ def _capture_via_playwright_chromium(site: str, *, timeout_sec: int) -> dict[str
         raise TimeoutError(
             f"No se detectó sesión en {label} a tiempo ({timeout_sec}s)."
         )
+    _save_auth_mode(site, "playwright")
     return {
         **session_status(site)[site],
         "captured_from": "playwright_chromium",
@@ -758,7 +863,7 @@ def interactive_login(
     if site not in AUTH_SITES:
         raise ValueError(f"Sitio desconocido: {site}. Usa: {', '.join(AUTH_SITES)}")
 
-    ch = channel or detect_channel_from_ua(user_agent)
+    ch = channel or preferred_system_channel(user_agent=user_agent, site=site) or "chrome"
     mode = (mode or "profile").lower().strip()
     if mode in ("system_browser", "daily", "import"):
         mode = "system"
