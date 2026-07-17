@@ -343,6 +343,7 @@ textarea.input { resize: vertical; min-height: 52px; font-family: var(--font-mon
 .prog-line, .log-line { padding: 2px 0; color: #8A96A3; }
 .prog-line.ok, .log-line.ok { color: var(--green); }
 .prog-line.warn, .log-line.warn { color: var(--amber); }
+.log-discard { margin-top: 2px; padding-left: 1.1rem; color: #8A96A3; font-size: 0.85em; opacity: 0.9; }
 .source-tally { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .source-tally:empty { display: none; }
 .tally-pill {

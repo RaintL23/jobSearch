@@ -597,8 +597,29 @@ function renderSourceStatus(sources) {
   const html = order.map(([key, name]) => {
     const info = (sources && sources[key]) || {};
     const ok = !!info.ok;
-    const count = typeof info.count === "number" ? ` (${info.count})` : "";
-    return `<div class="log-line ${ok ? "ok" : "warn"}"><strong>${ok ? "✓" : "!"} ${name}${count}:</strong> ${escapeHtml(info.message || "Sin información.")}</div>`;
+    const raw = typeof info.raw_count === "number" ? info.raw_count : null;
+    const count = typeof info.count === "number" ? info.count : null;
+    const countLabel =
+      raw != null && count != null && raw !== count
+        ? ` (${count}/${raw})`
+        : count != null
+          ? ` (${count})`
+          : "";
+    let extra = "";
+    const sample = Array.isArray(info.discarded_sample) ? info.discarded_sample : [];
+    if (sample.length) {
+      extra =
+        `<div class="log-discard">Ej. descartes: ` +
+        sample
+          .slice(0, 5)
+          .map(
+            (d) =>
+              `${escapeHtml(d.title || "?")} → ${escapeHtml(d.reason_label || d.reason || "?")}`,
+          )
+          .join(" · ") +
+        `</div>`;
+    }
+    return `<div class="log-line ${ok ? "ok" : "warn"}"><strong>${ok ? "✓" : "!"} ${name}${countLabel}:</strong> ${escapeHtml(info.message || "Sin información.")}${extra}</div>`;
   }).join("");
   box.innerHTML = `<div class="src-title">Estado del scraping</div>${html}`;
 
@@ -606,7 +627,9 @@ function renderSourceStatus(sources) {
     const info = (sources && sources[key]) || {};
     const ok = !!info.ok;
     const count = typeof info.count === "number" ? info.count : 0;
-    return `<span class="tally-pill"><span class="dot" style="background:${ok ? "var(--green)" : "var(--amber)"}"></span>${escapeHtml(name)} · ${count}</span>`;
+    const raw = typeof info.raw_count === "number" ? info.raw_count : null;
+    const label = raw != null && raw !== count ? `${count}/${raw}` : String(count);
+    return `<span class="tally-pill"><span class="dot" style="background:${ok ? "var(--green)" : "var(--amber)"}"></span>${escapeHtml(name)} · ${label}</span>`;
   }).join("");
 
   updatePulse(sources);
@@ -999,14 +1022,31 @@ btnSearch.addEventListener("click", async () => {
         appendSearchProgress(evt.message || `${evt.source}: ${evt.count || 0}`, {
           tone: evt.ok ? "ok" : "warn",
         });
+        const sample = Array.isArray(evt.discarded_sample) ? evt.discarded_sample : [];
+        if (sample.length) {
+          appendSearchProgress(
+            `  Descartes: ` +
+              sample
+                .slice(0, 4)
+                .map((d) => `${d.title || "?"} → ${d.reason_label || d.reason || "?"}`)
+                .join(" · "),
+            { tone: "warn" },
+          );
+        }
       } else if (type === "error") {
         throw new Error(evt.message || "Error en la búsqueda");
       } else if (type === "done") {
         finished = true;
-        appendSearchProgress(
-          `Listo · ${evt.count || (evt.jobs || []).length} oferta(s) tras filtros de match.`,
-          { tone: "ok" },
-        );
+        const meta = evt.analyze_meta || {};
+        const analyzeMsg =
+          meta.discarded_by_reason && Object.keys(meta.discarded_by_reason).length
+            ? `Listo · ${evt.count || (evt.jobs || []).length} oferta(s) finales` +
+              ` · análisis descartó ${Object.values(meta.discarded_by_reason).reduce((a, b) => a + b, 0)}` +
+              ` (${Object.entries(meta.discarded_by_reason)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(", ")})`
+            : `Listo · ${evt.count || (evt.jobs || []).length} oferta(s) tras filtros de match.`;
+        appendSearchProgress(analyzeMsg, { tone: "ok" });
         renderJobs(evt.jobs || [], evt.sources || {});
       }
     });
