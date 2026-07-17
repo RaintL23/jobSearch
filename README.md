@@ -90,8 +90,8 @@ entorno o `.env` (ver `.env.example`). Nada está hardcodeado en la lógica.
 | Variable | Default | Descripción |
 | --- | --- | --- |
 | `GOOGLE_API_KEY` | — | Clave de Google AI Studio (obligatoria). |
-| `GEMINI_MODELS` | `gemini-2.5-flash-lite,...` | Lista de modelos separados por coma. El motor prueba cada uno en orden si el anterior agota su cuota (429). |
-| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Modelo único de respaldo (solo se usa si `GEMINI_MODELS` está vacío). |
+| `GEMINI_MODELS` | `gemini-3.1-flash-lite,...` | Lista de modelos separados por coma. El motor prueba el siguiente si el anterior falla por cuota (429) o no está disponible (404). |
+| `GEMINI_MODEL` | `gemini-3.1-flash-lite` | Modelo único de respaldo (solo se usa si `GEMINI_MODELS` está vacío). |
 | `DEFAULT_COUNTRY` | `mx` | País ISO2 si el perfil no lo indica (alias: `COMPUTRABAJO_COUNTRY`). |
 | `AI_REQUEST_TIMEOUT_SEC` | `60` | Timeout por llamada a Gemini. |
 | `AI_MAX_CV_CHARS` | `12000` | Máx. de caracteres del CV enviados al modelo. |
@@ -136,7 +136,9 @@ y `/static/app.js`.
 ## Sesiones LinkedIn / Computrabajo (seguro)
 
 No guardamos contraseña. Por defecto se abre **Edge/Chrome con un perfil de JobSearch**
-(no cierra ni reinicia tu navegador diario). Te logueás una vez; después se reutiliza.
+(no cierra ni reinicia tu navegador diario). Te logueás una vez; las búsquedas de
+LinkedIn posteriores abren una pestaña usando directamente ese mismo perfil
+persistente y la cierran al terminar.
 
 **Opción fácil:** doble clic en `login.bat` (Windows) o `login.command` (macOS).
 

@@ -69,13 +69,33 @@ def _is_quota_error(exc: Exception) -> bool:
     )
 
 
+def _is_model_unavailable_error(exc: Exception) -> bool:
+    """True si el modelo no existe / no está disponible para esta cuenta (404)."""
+    msg = str(exc).lower()
+    return any(
+        kw in msg
+        for kw in (
+            "404",
+            "not_found",
+            "not found",
+            "no longer available",
+            "is not found",
+        )
+    )
+
+
+def _should_try_next_model(exc: Exception) -> bool:
+    """True si el error justifica intentar el siguiente modelo de la lista."""
+    return _is_quota_error(exc) or _is_model_unavailable_error(exc)
+
+
 def _generate_text(prompt: str, *, json_mode: bool = False) -> str:
     """
     Llama a Gemini y devuelve texto crudo.
 
-    Itera sobre la lista de modelos configurados: si uno devuelve error de cuota
-    (429 / RESOURCE_EXHAUSTED) pasa automáticamente al siguiente. Si todos fallan
-    por cuota lanza AIEngineError con el resumen de intentos.
+    Itera sobre la lista de modelos configurados: si uno falla por cuota (429) o
+    porque no está disponible (404), pasa automáticamente al siguiente. Si todos
+    fallan por esos motivos lanza AIEngineError con el resumen de intentos.
     """
     client, models = _active_client_and_models()
     gen_config = types.GenerateContentConfig(
@@ -95,20 +115,25 @@ def _generate_text(prompt: str, *, json_mode: bool = False) -> str:
                 logger.info("Gemini: respondió el modelo de respaldo '%s'", model)
             return (response.text or "").strip()
         except Exception as exc:  # noqa: BLE001
-            if _is_quota_error(exc) and idx < len(models) - 1:
+            if _should_try_next_model(exc) and idx < len(models) - 1:
+                reason = (
+                    "no disponible"
+                    if _is_model_unavailable_error(exc)
+                    else "cuota agotada"
+                )
                 logger.warning(
-                    "Gemini: cuota agotada en '%s' → probando '%s'",
+                    "Gemini: %s en '%s' → probando '%s'",
+                    reason,
                     model,
                     models[idx + 1],
                 )
                 last_exc = exc
                 continue
-            # Error distinto de cuota, o último modelo: propaga directamente.
+            # Error no recuperable, o último modelo: propaga directamente.
             raise
 
-    # Solo se llega aquí si todos los modelos agotaron cuota.
     raise AIEngineError(
-        f"Cuota agotada en todos los modelos Gemini configurados "
+        f"Ningún modelo Gemini configurado respondió "
         f"({', '.join(models)}). Último error: {last_exc}"
     ) from last_exc
 
