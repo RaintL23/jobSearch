@@ -193,7 +193,7 @@ def _analyze_raw_jobs(
     profile_dict: dict[str, Any],
     filters_dict: dict[str, Any],
     raw_jobs: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     filter_countries: list[str] = list(filters_dict.get("countries") or [])
     profile_country: str = str(profile_dict.get("country") or "")
 
@@ -205,6 +205,25 @@ def _analyze_raw_jobs(
         required_langs.append(filters_dict["required_language"])
 
     results: list[dict[str, Any]] = []
+    discard_counts: dict[str, int] = {}
+    discard_sample: list[dict[str, Any]] = []
+
+    def _note_discard(job: dict[str, Any], reason: str) -> None:
+        discard_counts[reason] = discard_counts.get(reason, 0) + 1
+        if len(discard_sample) < 12:
+            discard_sample.append(
+                {
+                    "title": str(job.get("title") or "")[:120],
+                    "company": str(job.get("company") or "")[:80],
+                    "reason": reason,
+                    "reason_label": {
+                        "country": "país",
+                        "language": "idioma",
+                        "salary": "salario",
+                    }.get(reason, reason),
+                }
+            )
+
     for job in raw_jobs:
         # --- Filtro de país para GetOnBoard (datos estructurados de la API) ---
         if job.get("source") == "getonboard":
@@ -215,11 +234,13 @@ def _analyze_raw_jobs(
                     job.get("company"),
                     job.get("_countries_raw"),
                 )
+                _note_discard(job, "country")
                 continue
 
         analyzed = analyze_job_local(profile_dict, job)
 
         if not passes_language_filters(analyzed, posting_langs, required_langs):
+            _note_discard(job, "language")
             continue
         if not salary_in_range(
             {
@@ -229,6 +250,7 @@ def _analyze_raw_jobs(
             filters_dict.get("salary_min_usd"),
             filters_dict.get("salary_max_usd"),
         ):
+            _note_discard(job, "salary")
             continue
 
         analyzed["description"] = (job.get("description") or "")[:4000]
@@ -261,7 +283,31 @@ def _analyze_raw_jobs(
         )
 
     results.sort(key=_sort_key)
-    return results
+    analyze_meta = {
+        "input_count": len(raw_jobs),
+        "kept_count": len(results),
+        "discarded_by_reason": discard_counts,
+        "discarded_sample": discard_sample,
+    }
+    return results, analyze_meta
+
+
+def _format_analyze_discard_message(meta: dict[str, Any]) -> str:
+    input_n = int(meta.get("input_count") or 0)
+    kept_n = int(meta.get("kept_count") or 0)
+    counts = meta.get("discarded_by_reason") or {}
+    discarded_n = input_n - kept_n
+    msg = f"Listo · {kept_n} oferta(s) tras filtros de match"
+    if discarded_n > 0 and counts:
+        labels = {"country": "país", "language": "idioma", "salary": "salario"}
+        detail = ", ".join(
+            f"{labels.get(k, k)}: {v}"
+            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])
+        )
+        msg += f" · {discarded_n} descartada(s) en análisis ({detail})"
+    elif discarded_n > 0:
+        msg += f" · {discarded_n} descartada(s) en análisis"
+    return msg + "."
 
 
 def _apply_ai_batch(
@@ -349,13 +395,14 @@ async def search_jobs_endpoint(payload: SearchRequest) -> dict[str, Any]:
         raw_jobs = scrape_result or []
         sources = {}
 
-    results = _analyze_raw_jobs(profile_dict, filters_dict, raw_jobs)
+    results, analyze_meta = _analyze_raw_jobs(profile_dict, filters_dict, raw_jobs)
 
     return {
         "jobs": results,
         "count": len(results),
         "filters_applied": filters_dict,
         "sources": sources,
+        "analyze_meta": analyze_meta,
     }
 
 
@@ -389,7 +436,15 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
                     "count": len(raw_jobs),
                 }
             )
-            results = _analyze_raw_jobs(profile_dict, filters_dict, raw_jobs)
+            results, analyze_meta = _analyze_raw_jobs(profile_dict, filters_dict, raw_jobs)
+            on_progress(
+                {
+                    "event": "progress",
+                    "source": "all",
+                    "message": _format_analyze_discard_message(analyze_meta),
+                    "count": len(results),
+                }
+            )
             q.put(
                 {
                     "event": "done",
@@ -397,6 +452,7 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
                     "count": len(results),
                     "filters_applied": filters_dict,
                     "sources": sources,
+                    "analyze_meta": analyze_meta,
                 }
             )
         except Exception as exc:  # noqa: BLE001
