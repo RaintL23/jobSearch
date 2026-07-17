@@ -345,12 +345,11 @@ def _finalize(
     *,
     source: str = "",
 ) -> dict[str, Any] | None:
-    queries = list(filters.get("queries") or [])
-    if queries and not matches_search_queries(job, queries):
-        return None
-    effective = _posted_filters_for_source(filters, source)
-    if not within_posted_window(job.get("published_at"), effective):
-        return None
+    """
+    Compat: antes filtraba query/fecha aquí. Ahora devolvemos el job crudo;
+    el descarte con motivos ocurre en search_jobs._partition_jobs.
+    """
+    del filters, source
     return job
 
 
@@ -496,10 +495,6 @@ def scrape_remotive(
             desc = _strip_html(item.get("description") or "")
             title = str(item.get("title") or "")
             company = str(item.get("company_name") or "")
-            tags = " ".join(str(t) for t in (item.get("tags") or []))
-            blob = f"{title} {company} {tags} {desc}"
-            if terms and not _keyword_hit(blob, terms):
-                continue
 
             seen.add(job_url)
             extra = f" Ubicación: {loc}." if loc else ""
@@ -637,9 +632,6 @@ def scrape_jobicy(
             title = str(item.get("jobTitle") or "")
             company = str(item.get("companyName") or "Empresa Jobicy")
             desc = _strip_html(item.get("jobDescription") or item.get("jobExcerpt") or "")
-            blob = f"{title} {company} {desc}"
-            if terms and not _keyword_hit(blob, terms):
-                continue
 
             seen.add(job_url)
             geo_txt = item.get("jobGeo") or "Remote"
