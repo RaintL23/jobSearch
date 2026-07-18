@@ -317,17 +317,6 @@ const multiFilters = {
       ["onsite", "Presencial"],
     ],
   }),
-  countries: createMultiSelect(document.querySelector('[data-ms="countries"]'), {
-    label: "Países",
-    placeholder: "Del perfil / cualquiera",
-    options: [
-      ["mx", "México"], ["co", "Colombia"], ["ar", "Argentina"], ["pe", "Perú"],
-      ["cl", "Chile"], ["ec", "Ecuador"], ["uy", "Uruguay"], ["ve", "Venezuela"],
-      ["cr", "Costa Rica"], ["pa", "Panamá"], ["gt", "Guatemala"], ["bo", "Bolivia"],
-      ["py", "Paraguay"], ["do", "Rep. Dominicana"], ["hn", "Honduras"],
-      ["sv", "El Salvador"], ["ni", "Nicaragua"], ["cu", "Cuba"], ["pr", "Puerto Rico"],
-    ],
-  }),
   postingLang: createMultiSelect(document.querySelector('[data-ms="postingLang"]'), {
     label: "Idioma de la propuesta",
     placeholder: "Cualquiera",
@@ -358,18 +347,11 @@ function updateFooterNote() {
 
 function updateStep2Summary() {
   const modes = multiFilters.workMode.values;
-  const countries = multiFilters.countries.values;
+  const locs = splitMulti(document.getElementById("filterLocations").value);
   const modeLabels = { remote: "Remoto", hybrid: "Híbrido", onsite: "Presencial" };
-  const countryLabels = Object.fromEntries([
-    ["mx", "México"], ["co", "Colombia"], ["ar", "Argentina"], ["pe", "Perú"],
-    ["cl", "Chile"], ["ec", "Ecuador"], ["uy", "Uruguay"], ["ve", "Venezuela"],
-    ["cr", "Costa Rica"], ["pa", "Panamá"], ["gt", "Guatemala"], ["bo", "Bolivia"],
-    ["py", "Paraguay"], ["do", "RD"], ["hn", "Honduras"], ["sv", "El Salvador"],
-    ["ni", "Nicaragua"], ["cu", "Cuba"], ["pr", "PR"],
-  ]);
   const parts = [];
   if (modes.length) parts.push(modes.map((m) => modeLabels[m] || m).join("/"));
-  if (countries.length) parts.push(countries.map((c) => countryLabels[c] || c).slice(0, 2).join(", "));
+  if (locs.length) parts.push(locs.slice(0, 2).join(", "));
   document.getElementById("step2Summary").textContent = parts.length ? parts.join(" · ") : "Configura fuentes";
 }
 
@@ -439,15 +421,11 @@ function applyProfile(obj, okMsg) {
   }
   const loc = document.getElementById("filterLocations");
   if (!loc.value.trim() && obj.location) loc.value = obj.location;
-  if (obj.country) {
-    const code = String(obj.country).toLowerCase();
-    if (!multiFilters.countries.values.length) {
-      multiFilters.countries.setValues([code]);
-    }
-  }
   setProfileReady(true, okMsg || "Perfil válido · cargado", { collapse: true });
   updateStep2Summary();
 }
+
+document.getElementById("filterLocations").addEventListener("input", updateStep2Summary);
 
 function getFilters() {
   const minV = document.getElementById("filterSalaryMin").value;
@@ -459,7 +437,7 @@ function getFilters() {
     sources: multiFilters.sources.values,
     experience_levels: multiFilters.experience.values,
     work_modes: multiFilters.workMode.values,
-    countries: multiFilters.countries.values,
+    countries: [],
     salary_min_usd: minV === "" ? null : Number(minV),
     salary_max_usd: maxV === "" ? null : Number(maxV),
     posting_languages: multiFilters.postingLang.values,

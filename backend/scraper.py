@@ -234,11 +234,9 @@ def _linkedin_search_locations(
     - ``""`` → usar geoId del país (búsqueda en todo el país).
     - texto → param ``location=`` (ciudad, Remoto LATAM, etc.).
 
-    Si hay país seleccionado, SIEMPRE incluimos la búsqueda country-wide
-    (geoId). Las entradas de «Ubicaciones» se suman como búsquedas extra
-    (p. ej. Remoto LATAM), sin reemplazar el país. Así «Argentina» no
-    queda reducido a Greater Buenos Aires solo porque el perfil/placeholder
-    trajo «Buenos Aires» en el textarea.
+    Si hay país explícito (filtro legacy), incluimos la búsqueda country-wide
+    (geoId) y sumamos las ubicaciones de texto. Sin país, solo se usan las
+    ubicaciones del textarea (separadas por comas/líneas).
     """
     explicit = [loc.strip() for loc in locations if loc and str(loc).strip()]
     if has_country:
@@ -912,19 +910,31 @@ def scrape_linkedin(
     filters = _normalize_filters(filters)
     queries = _search_queries(profile, filters)
     locations = _locations(profile, filters)
-    countries = _country_codes(profile, filters)
+    explicit_countries = [c for c in (filters.get("countries") or []) if c in COUNTRY_META]
+    has_explicit_locations = any(str(loc).strip() for loc in locations)
+
+    # Sin dropdown de países: si hay ubicaciones de texto, buscamos solo por ellas.
+    # Si no hay ubicaciones, caemos al país del perfil / default (geoId).
+    if explicit_countries:
+        countries: list[str | None] = explicit_countries[:8]
+        has_country = True
+    elif has_explicit_locations:
+        countries = [None]
+        has_country = False
+    else:
+        countries = list(_country_codes(profile, filters))
+        has_country = True
 
     page = _new_page(browser, site="linkedin")
     jobs: list[dict[str, Any]] = []
     seen: set[str] = set()
     logged_in = _linkedin_session_ready()
-    has_country = bool(countries)
 
     try:
         for country in countries:
             if len(jobs) >= SAFETY_CAP:
                 break
-            meta = COUNTRY_META[country]
+            meta = COUNTRY_META.get(country) if country else None
             locs = _linkedin_search_locations(locations, has_country=has_country)
             for keyword in queries:
                 if len(jobs) >= SAFETY_CAP:
@@ -935,8 +945,8 @@ def scrape_linkedin(
                     # "" → geoId del país (toda Argentina, no solo AMBA).
                     # Texto → location= libre (ciudad / Remoto LATAM / etc.).
                     location = loc.strip()
-                    geo_id = meta["geo"] if not location else None
-                    display_location = location or meta["name"]
+                    geo_id = meta["geo"] if meta and not location else None
+                    display_location = location or (meta["name"] if meta else "")
 
                     for page_idx in range(LINKEDIN_MAX_PAGES):
                         if len(jobs) >= SAFETY_CAP:
