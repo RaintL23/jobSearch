@@ -1470,3 +1470,64 @@ document.getElementById("apiKeyShow").addEventListener("change", (e) => {
 apiKeyBadge.addEventListener("click", openApiKeyModal);
 
 checkApiKeyStatus();
+
+/** Cierra la ventana cuando el servidor deja de responder (Ctrl+C / cerrar CMD). */
+function watchServerAlive() {
+  if (!(location.hostname === "127.0.0.1" || location.hostname === "localhost")) return;
+
+  let failing = false;
+  let failStreak = 0;
+
+  function tryCloseUi() {
+    document.title = "Servidor detenido — JobSearch";
+    try {
+      window.close();
+    } catch {
+      /* ignore */
+    }
+    // Si el navegador bloquea close() (pestaña normal), al menos avisar.
+    setTimeout(() => {
+      if (!document.hidden) {
+        document.body.innerHTML = `
+          <div style="font-family:system-ui;padding:48px;max-width:420px;margin:10vh auto;text-align:center;color:#12181C">
+            <h1 style="font-size:1.25rem;margin:0 0 8px">Servidor detenido</h1>
+            <p style="margin:0;color:#4B565E;line-height:1.5">
+              La terminal de JobSearch se cerró. Podés cerrar esta pestaña.
+            </p>
+          </div>`;
+      }
+    }, 250);
+  }
+
+  async function probe() {
+    try {
+      const res = await fetch(`${API_BASE}/health`, { cache: "no-store" });
+      if (!res.ok) throw new Error("bad status");
+      failStreak = 0;
+      failing = false;
+    } catch {
+      failStreak += 1;
+      failing = true;
+      if (failStreak >= 2) tryCloseUi();
+    }
+  }
+
+  try {
+    const es = new EventSource(`${API_BASE}/events/alive`);
+    es.onmessage = () => {
+      failStreak = 0;
+      failing = false;
+    };
+    es.onerror = () => {
+      // EventSource reintenta solo; confirmamos con /health.
+      if (!failing) failing = true;
+      probe();
+    };
+  } catch {
+    /* ignore */
+  }
+
+  setInterval(probe, 3000);
+}
+
+watchServerAlive();

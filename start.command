@@ -122,22 +122,13 @@ if grep -qi "GOOGLE_API_KEY=tu_api_key_aqui" .env 2>/dev/null; then
   sleep 3
 fi
 
-# 7. Arrancar y abrir navegador
+# 7. Arrancar y abrir navegador (se cierra la UI al detener el server)
 echo ""
 echo "  Iniciando servidor en http://127.0.0.1:8000"
-echo "  Presiona Ctrl+C para detener."
+echo "  Presiona Ctrl+C o cierra esta ventana para detener."
 echo ""
 
-(
-  sleep 2
-  if command -v open >/dev/null 2>&1; then
-    open "http://127.0.0.1:8000"
-  elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "http://127.0.0.1:8000"
-  fi
-) &
-
-uvicorn backend.main:app --host 127.0.0.1 --port 8000
+python -m backend.run
 
 echo ""
 echo "  Servidor detenido."

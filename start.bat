@@ -114,15 +114,13 @@ if %errorlevel% equ 0 (
     timeout /t 3 /nobreak >nul
 )
 
-REM 7. Arrancar servidor y abrir navegador
+REM 7. Arrancar servidor y abrir navegador (se cierra la UI al detener el server)
 echo.
 echo  Iniciando servidor en http://127.0.0.1:8000
-echo  Presiona Ctrl+C para detener.
+echo  Presiona Ctrl+C o cierra esta ventana para detener.
 echo.
 
-start /b cmd /c "timeout /t 2 /nobreak >nul && start http://127.0.0.1:8000"
-
-uvicorn backend.main:app --host 127.0.0.1 --port 8000
+python -m backend.run
 
 echo.
 echo  Servidor detenido.

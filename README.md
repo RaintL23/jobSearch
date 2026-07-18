@@ -71,6 +71,13 @@ cp .env.example .env
 ## Ejecución manual
 
 ```bash
+# Recomendado: abre la UI y la cierra al detener el servidor
+python -m backend.run
+```
+
+O solo el API:
+
+```bash
 uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 

@@ -721,5 +721,30 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/events/alive")
+async def alive_stream(request: Request) -> StreamingResponse:
+    """
+    Heartbeat SSE: la UI lo usa para detectar cuando el servidor se apaga
+    y cerrar la pestaña/ventana automáticamente.
+    """
+
+    async def event_gen():
+        while True:
+            if await request.is_disconnected():
+                break
+            yield "data: ok\n\n"
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
