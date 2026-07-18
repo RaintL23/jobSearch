@@ -208,16 +208,44 @@ function createMultiSelect(mountEl, { label, options, placeholder }) {
   function setOpen(open) {
     wrap.classList.toggle("open", open);
     btn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (!open) {
+      wrap.classList.remove("drop-up");
+      wrap.style.removeProperty("--ms-max-height");
+    }
+  }
+
+  function positionPanel() {
+    if (!wrap.classList.contains("open")) return;
+
+    const btnRect = btn.getBoundingClientRect();
+    const scrollRect = sidebar.querySelector(".sidebar-scroll").getBoundingClientRect();
+    const viewportBottom = Math.min(window.innerHeight, scrollRect.bottom);
+    const viewportTop = Math.max(0, scrollRect.top);
+    const availableBelow = viewportBottom - btnRect.bottom - 8;
+    const availableAbove = btnRect.top - viewportTop - 8;
+    const openUp = availableBelow < 224 && availableAbove > availableBelow;
+    const available = openUp ? availableAbove : availableBelow;
+
+    wrap.classList.toggle("drop-up", openUp);
+    wrap.style.setProperty("--ms-max-height", `${Math.max(64, Math.min(224, available))}px`);
   }
 
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
     const willOpen = !wrap.classList.contains("open");
     document.querySelectorAll(".ms-wrap.open").forEach((el) => {
-      if (el !== wrap) el.classList.remove("open");
+      if (el !== wrap) {
+        el.classList.remove("open", "drop-up");
+        el.style.removeProperty("--ms-max-height");
+        el.querySelector(".ms-btn")?.setAttribute("aria-expanded", "false");
+      }
     });
     setOpen(willOpen);
+    if (willOpen) positionPanel();
   });
+
+  window.addEventListener("resize", positionPanel);
+  sidebar.querySelector(".sidebar-scroll").addEventListener("scroll", positionPanel, { passive: true });
 
   panel.addEventListener("click", (e) => e.stopPropagation());
 
@@ -313,7 +341,11 @@ const multiFilters = {
 };
 
 document.addEventListener("click", () => {
-  document.querySelectorAll(".ms-wrap.open").forEach((el) => el.classList.remove("open"));
+  document.querySelectorAll(".ms-wrap.open").forEach((el) => {
+    el.classList.remove("open", "drop-up");
+    el.style.removeProperty("--ms-max-height");
+    el.querySelector(".ms-btn")?.setAttribute("aria-expanded", "false");
+  });
 });
 
 function updateFooterNote() {
