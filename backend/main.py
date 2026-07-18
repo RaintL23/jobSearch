@@ -128,7 +128,7 @@ class SearchFilters(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    profile: ProfilePayload
+    profile: ProfilePayload = Field(default_factory=lambda: ProfilePayload(country=""))
     filters: SearchFilters = Field(default_factory=SearchFilters)
 
 
@@ -196,6 +196,7 @@ def _analyze_raw_jobs(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     filter_countries: list[str] = list(filters_dict.get("countries") or [])
     profile_country: str = str(profile_dict.get("country") or "")
+    match_available = bool(profile_dict.get("skills") or profile_dict.get("roles"))
 
     posting_langs = list(filters_dict.get("posting_languages") or [])
     if filters_dict.get("posting_language") and filters_dict["posting_language"] != "any":
@@ -238,6 +239,11 @@ def _analyze_raw_jobs(
                 continue
 
         analyzed = analyze_job_local(profile_dict, job)
+        if not match_available:
+            analyzed["match_percent"] = None
+            analyzed["matched_skills"] = []
+            analyzed["missing_skills"] = []
+            analyzed["advice"] = "Cargá un perfil CV para calcular el match y recibir recomendaciones."
 
         if not passes_language_filters(analyzed, posting_langs, required_langs):
             _note_discard(job, "language")
@@ -268,7 +274,8 @@ def _analyze_raw_jobs(
         results.append(analyzed)
 
     # --- Análisis IA en batch para casos ambiguos de GOB (best-effort) ---
-    _apply_ai_batch(profile_dict, filter_countries, profile_country, results)
+    if match_available:
+        _apply_ai_batch(profile_dict, filter_countries, profile_country, results)
 
     # Eliminar campos internos antes de devolver al frontend.
     for job in results:
@@ -286,6 +293,7 @@ def _analyze_raw_jobs(
     analyze_meta = {
         "input_count": len(raw_jobs),
         "kept_count": len(results),
+        "match_available": match_available,
         "discarded_by_reason": discard_counts,
         "discarded_sample": discard_sample,
     }
@@ -297,7 +305,8 @@ def _format_analyze_discard_message(meta: dict[str, Any]) -> str:
     kept_n = int(meta.get("kept_count") or 0)
     counts = meta.get("discarded_by_reason") or {}
     discarded_n = input_n - kept_n
-    msg = f"Listo · {kept_n} oferta(s) tras filtros de match"
+    suffix = "con match calculado" if meta.get("match_available") else "sin cálculo de match"
+    msg = f"Listo · {kept_n} oferta(s) {suffix}"
     if discarded_n > 0 and counts:
         labels = {"country": "país", "language": "idioma", "salary": "salario"}
         detail = ", ".join(
@@ -432,7 +441,11 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
                 {
                     "event": "progress",
                     "source": "all",
-                    "message": f"Analizando match de {len(raw_jobs)} oferta(s)…",
+                    "message": (
+                        f"Analizando match de {len(raw_jobs)} oferta(s)…"
+                        if profile_dict.get("skills") or profile_dict.get("roles")
+                        else f"Procesando {len(raw_jobs)} oferta(s) sin perfil…"
+                    ),
                     "count": len(raw_jobs),
                 }
             )

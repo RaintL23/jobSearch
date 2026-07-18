@@ -481,9 +481,11 @@ td { padding: 12px 14px; vertical-align: top; color: var(--ink-900); }
   width: 5px; height: 13px; border-radius: 1.5px; background: var(--line);
 }
 .match-pct { font-family: var(--font-mono); font-weight: 600; font-size: 12.5px; width: 32px; }
+.match-pct.unavailable { color: var(--ink-400); }
 .tier-high .match-pct { color: var(--green); }
 .tier-mid .match-pct { color: var(--amber); }
 .tier-low .match-pct { color: var(--coral); }
+.tier-low .match-pct.unavailable { color: var(--ink-400); }
 .tier-high .match-bars span.fill { background: var(--green); }
 .tier-mid .match-bars span.fill { background: var(--amber); }
 .tier-low .match-bars span.fill { background: var(--coral); }

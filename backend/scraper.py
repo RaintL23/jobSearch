@@ -1801,7 +1801,7 @@ def search_jobs(
         message=(
             f"Scraping listo · {len(collected)} oferta(s) únicas"
             + (f" ({', '.join(discard_bits)})" if discard_bits else "")
-            + ". Analizando match…"
+            + ". Procesando resultados…"
         ),
         count=len(collected),
     )

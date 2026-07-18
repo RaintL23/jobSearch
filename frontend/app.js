@@ -342,7 +342,7 @@ function updateFooterNote() {
   const n = srcs.length || 7;
   document.getElementById("footerNote").textContent = profileReady
     ? `${n} fuente${n === 1 ? "" : "s"} · listo para buscar`
-    : "Elegí fuentes y perfil";
+    : `${n} fuente${n === 1 ? "" : "s"} · sin cálculo de match`;
 }
 
 function updateStep2Summary() {
@@ -356,7 +356,7 @@ function updateStep2Summary() {
 }
 
 function setLoading(btn, labelEl, spinnerEl, loading, idle, busy) {
-  if (btn === btnSearch) btn.disabled = loading || !profileReady;
+  if (btn === btnSearch) btn.disabled = loading;
   else btn.disabled = loading;
   labelEl.textContent = loading ? busy : idle;
   spinnerEl.classList.toggle("hidden", !loading);
@@ -392,7 +392,6 @@ function updateProfileChip(obj) {
 
 function setProfileReady(ready, statusMsg, { collapse = false } = {}) {
   profileReady = ready;
-  btnSearch.disabled = !ready;
   profileStatus.textContent = statusMsg || (ready ? "Perfil válido · cargado" : "Sin perfil válido todavía.");
   profileStatus.className = ready ? "json-status" : "json-status idle";
   step1.classList.toggle("complete", ready);
@@ -772,7 +771,8 @@ function renderTableRows(list) {
 
   const frag = document.createDocumentFragment();
   list.forEach(({ job, idx }) => {
-    const pct = Number(job.match_percent) || 0;
+    const hasMatch = job.match_percent !== null && job.match_percent !== undefined;
+    const pct = hasMatch ? Number(job.match_percent) || 0 : 0;
     const tier = tierOf(pct);
     const src = sourceLabel(job.source);
     const company = job.company || "Empresa no indicada";
@@ -795,8 +795,9 @@ function renderTableRows(list) {
       <td class="req-cell">${escapeHtml(truncate(job.requirements, 140))}</td>
       <td>
         <div class="match">
-          <div class="match-bars">${matchBars(pct)}</div>
-          <span class="match-pct">${pct}%</span>
+          ${hasMatch
+            ? `<div class="match-bars">${matchBars(pct)}</div><span class="match-pct">${pct}%</span>`
+            : `<span class="match-pct unavailable" title="Cargá un perfil CV para calcular el match">—</span>`}
         </div>
       </td>
       <td>
@@ -963,7 +964,6 @@ profileJson.addEventListener("input", () => {
       step1Summary.textContent = profileSummary(lastProfile);
     } catch {
       profileReady = false;
-      btnSearch.disabled = true;
       profileStatus.textContent = "JSON inválido";
       profileStatus.className = "json-status error";
       step1.classList.remove("complete");
@@ -991,15 +991,35 @@ btnSearch.addEventListener("click", async () => {
   show(document.getElementById("step2Empty"), "");
   clearResultsTable();
 
-  let profile;
-  try {
-    profile = getProfile();
-    lastProfile = profile;
-    setProfileReady(true, "Perfil válido · cargado", { collapse: true });
-  } catch (err) {
-    show(document.getElementById("step2Error"), err.message || String(err));
-    setStep1Collapsed(false);
+  const filters = getFilters();
+  let profile = null;
+  if (profileJson.value.trim()) {
+    try {
+      profile = getProfile();
+      lastProfile = profile;
+      setProfileReady(true, "Perfil válido · cargado", { collapse: true });
+    } catch {
+      show(document.getElementById("step2Error"), "El perfil JSON es inválido. Corregilo o vaciá el editor para buscar sin match.");
+      setStep1Collapsed(false);
+      return;
+    }
+  }
+  if (!profile && !filters.queries.length) {
+    show(document.getElementById("step2Error"), "Sin perfil, indicá al menos un texto de búsqueda.");
+    setStepOpen(document.getElementById("step2"), true);
     return;
+  }
+  if (!profile) {
+    lastProfile = null;
+    profile = {
+      name: "Sin perfil",
+      roles: [],
+      skills: [],
+      experience_years: 0,
+      summary: "",
+      location: "",
+      country: "",
+    };
   }
 
   setLoading(btnSearch, document.getElementById("searchLabel"), document.getElementById("searchSpinner"), true, "Iniciar búsqueda", "Buscando…");
@@ -1015,7 +1035,7 @@ btnSearch.addEventListener("click", async () => {
     const res = await fetch(`${API_BASE}/search-jobs-stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ profile, filters: getFilters() }),
+      body: JSON.stringify({ profile, filters }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -1055,7 +1075,7 @@ btnSearch.addEventListener("click", async () => {
               ` (${Object.entries(meta.discarded_by_reason)
                 .map(([k, v]) => `${k}: ${v}`)
                 .join(", ")})`
-            : `Listo · ${evt.count || (evt.jobs || []).length} oferta(s) tras filtros de match.`;
+            : `Listo · ${evt.count || (evt.jobs || []).length} oferta(s) encontradas.`;
         appendSearchProgress(analyzeMsg, { tone: "ok" });
         renderJobs(evt.jobs || [], evt.sources || {});
       }
@@ -1074,7 +1094,6 @@ btnSearch.addEventListener("click", async () => {
   } finally {
     setLoading(btnSearch, document.getElementById("searchLabel"), document.getElementById("searchSpinner"), false, "Iniciar búsqueda", "Buscando…");
     btnProcess.disabled = false;
-    btnSearch.disabled = !profileReady;
   }
 });
 
