@@ -36,13 +36,19 @@ from backend.config import get_settings
 from backend.runtime_key import has_runtime_key, set_runtime_key
 from backend.job_analyzer import (
     analyze_job_local,
+    linkedin_hiring_location_ok,
     passes_gob_country_filter,
     passes_language_filters,
     salary_in_range,
 )
 from backend.date_utils import hours_since_published
 from backend.query_match import extract_location
-from backend.scraper import SOURCE_LABELS, SOURCE_LATAM_RANK, search_jobs
+from backend.scraper import (
+    SOURCE_LABELS,
+    SOURCE_LATAM_RANK,
+    is_linkedin_hiring_permalink,
+    search_jobs,
+)
 from backend.utils import PDFExtractionError, extract_text_from_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -196,6 +202,9 @@ def _analyze_raw_jobs(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     filter_countries: list[str] = list(filters_dict.get("countries") or [])
     profile_country: str = str(profile_dict.get("country") or "")
+    filter_locations: list[str] = list(filters_dict.get("locations") or [])
+    if profile_dict.get("location"):
+        filter_locations = filter_locations + [str(profile_dict["location"])]
     match_available = bool(profile_dict.get("skills") or profile_dict.get("roles"))
 
     posting_langs = list(filters_dict.get("posting_languages") or [])
@@ -221,9 +230,12 @@ def _analyze_raw_jobs(
                         "country": "país",
                         "language": "idioma",
                         "salary": "salario",
+                        "invalid_link": "enlace no específico",
                     }.get(reason, reason),
                 }
             )
+
+    hiring_user_country = (filter_countries[0] if filter_countries else profile_country) or ""
 
     for job in raw_jobs:
         # --- Filtro de país para GetOnBoard (datos estructurados de la API) ---
@@ -238,7 +250,30 @@ def _analyze_raw_jobs(
                 _note_discard(job, "country")
                 continue
 
+        # --- Validación de ubicación para posts LinkedIn #Hiring ---
+        needs_ai_location = False
+        if job.get("source") == "linkedin_hiring":
+            if not is_linkedin_hiring_permalink(str(job.get("url") or "")):
+                _note_discard(job, "invalid_link")
+                continue
+            verdict = linkedin_hiring_location_ok(
+                str(job.get("description") or ""),
+                hiring_user_country,
+                filter_locations,
+            )
+            if verdict is False:
+                logger.debug(
+                    "LinkedIn #Hiring location filter: descartando '%s' (%s)",
+                    job.get("title"),
+                    job.get("company"),
+                )
+                _note_discard(job, "country")
+                continue
+            needs_ai_location = verdict is None
+
         analyzed = analyze_job_local(profile_dict, job)
+        if needs_ai_location:
+            analyzed["_needs_ai_location"] = True
         if not match_available:
             analyzed["match_percent"] = None
             analyzed["matched_skills"] = []
@@ -273,13 +308,16 @@ def _analyze_raw_jobs(
         analyzed["_countries_raw"] = job.get("_countries_raw") or []
         results.append(analyzed)
 
-    # --- Análisis IA en batch para casos ambiguos de GOB (best-effort) ---
+    # --- Análisis IA en batch para casos ambiguos (GOB + #Hiring) (best-effort) ---
     if match_available:
-        _apply_ai_batch(profile_dict, filter_countries, profile_country, results)
+        dropped = _apply_ai_batch(profile_dict, filter_countries, profile_country, results)
+        for job in dropped:
+            _note_discard(job, "country")
 
     # Eliminar campos internos antes de devolver al frontend.
     for job in results:
         job.pop("_countries_raw", None)
+        job.pop("_needs_ai_location", None)
 
     def _sort_key(job: dict[str, Any]) -> tuple[int, float, int]:
         hours = hours_since_published(job.get("published_at"))
@@ -308,7 +346,12 @@ def _format_analyze_discard_message(meta: dict[str, Any]) -> str:
     suffix = "con match calculado" if meta.get("match_available") else "sin cálculo de match"
     msg = f"Listo · {kept_n} oferta(s) {suffix}"
     if discarded_n > 0 and counts:
-        labels = {"country": "país", "language": "idioma", "salary": "salario"}
+        labels = {
+            "country": "país",
+            "language": "idioma",
+            "salary": "salario",
+            "invalid_link": "enlace no específico",
+        }
         detail = ", ".join(
             f"{labels.get(k, k)}: {v}"
             for k, v in sorted(counts.items(), key=lambda kv: -kv[1])
@@ -324,29 +367,39 @@ def _apply_ai_batch(
     filter_countries: list[str],
     profile_country: str,
     results: list[dict[str, Any]],
-) -> None:
+) -> list[dict[str, Any]]:
     """
-    Analiza en batch las ofertas de GetOnBoard con ubicación ambigua y match borderline.
+    Analiza en batch los casos de ubicación ambigua y match borderline con IA.
+
+    Cubre dos fuentes:
+      - GetOnBoard sin países estructurados (match 30-75).
+      - LinkedIn #Hiring marcado como ambiguo por la heurística de ubicación.
 
     Solo actúa si AI_MATCH_ENABLED=true en .env y hay API key configurada.
     Una sola llamada a Gemini por grupo de hasta 6 ofertas (token-eficiente).
-    Modifica `results` en lugar (ajusta match_percent y agrega nota en advice).
+    Modifica `results` en lugar (ajusta match_percent y advice) y devuelve la
+    lista de ofertas eliminadas por país no compatible (para el conteo de
+    descartes).
     """
     settings = get_settings()
     if not settings.ai_match_enabled or (not settings.has_api_key and not has_runtime_key()):
-        return
+        return []
 
-    # Ofertas GOB sin información estructurada de países y con match borderline.
-    # Estas son las que más se benefician de análisis IA.
+    # Ofertas con ubicación ambigua que más se benefician del análisis IA:
+    #  - GOB sin países estructurados y con match borderline.
+    #  - #Hiring que la heurística no pudo clasificar (posible US-only, etc.).
     ambiguous_idxs = [
         i for i, j in enumerate(results)
-        if j.get("source") == "getonboard"
-        and not j.get("_countries_raw")
-        and 30 <= int(j.get("match_percent") or 0) <= 75
+        if (
+            j.get("source") == "getonboard"
+            and not j.get("_countries_raw")
+            and 30 <= int(j.get("match_percent") or 0) <= 75
+        )
+        or (j.get("source") == "linkedin_hiring" and j.get("_needs_ai_location"))
     ]
 
     if not ambiguous_idxs:
-        return
+        return []
 
     user_country = (filter_countries[0] if filter_countries else profile_country) or ""
     batch_jobs = [results[i] for i in ambiguous_idxs]
@@ -355,8 +408,9 @@ def _apply_ai_batch(
         ai_entries = batch_analyze_relevance(profile_dict, batch_jobs, user_country)
     except Exception as exc:  # noqa: BLE001
         logger.warning("batch_analyze_relevance falló (se ignora): %s", exc)
-        return
+        return []
 
+    drop_idxs: set[int] = set()
     for entry in ai_entries:
         batch_pos = int(entry.get("idx", 0)) - 1
         if batch_pos < 0 or batch_pos >= len(ambiguous_idxs):
@@ -368,7 +422,12 @@ def _apply_ai_batch(
         delta = int(entry.get("match_delta") or 0)
         reason = str(entry.get("reason") or "").strip()
 
-        # Penalización extra si la IA detecta incompatibilidad de país.
+        # #Hiring incompatible según la IA → excluir (validación de ubicación).
+        if country_ok is False and job.get("source") == "linkedin_hiring":
+            drop_idxs.add(result_idx)
+            continue
+
+        # GOB: penalización extra si la IA detecta incompatibilidad de país.
         if country_ok is False:
             delta = min(delta, -15)
             reason = f"⚠️ País posiblemente no disponible. {reason}".strip()
@@ -378,6 +437,11 @@ def _apply_ai_batch(
         if reason:
             existing_advice = job.get("advice") or ""
             job["advice"] = f"[IA] {reason}\n{existing_advice}".strip()
+
+    dropped = [results[i] for i in sorted(drop_idxs)]
+    if drop_idxs:
+        results[:] = [r for i, r in enumerate(results) if i not in drop_idxs]
+    return dropped
 
 
 @app.post("/search-jobs")

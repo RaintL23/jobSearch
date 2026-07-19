@@ -541,6 +541,160 @@ def passes_gob_country_filter(
     return bool(wanted & job_iso)
 
 
+# --- Validación de ubicación para posts LinkedIn #Hiring ---------------------
+
+# Frases que abren la búsqueda a todo el mundo / LATAM → siempre permitidas.
+_HIRING_OPEN_TERMS: tuple[str, ...] = (
+    "worldwide",
+    "world wide",
+    "anywhere in the world",
+    "fully remote",
+    "remote (global)",
+    "global remote",
+    "work from anywhere",
+    "open to latam",
+    "latam",
+    "latin america",
+    "latinoam",
+    "sudamerica",
+    "south america",
+    "remoto global",
+    "desde cualquier lugar",
+)
+
+# Restricciones por región: si aparece la frase, la oferta se limita a esa
+# región. Cada región mapea a los códigos ISO2 que SÍ pueden postular.
+_HIRING_REGION_RESTRICTIONS: dict[str, tuple[frozenset[str], tuple[str, ...]]] = {
+    "us": (
+        frozenset({"us"}),
+        (
+            "us based",
+            "u.s. based",
+            "us-based",
+            "usa based",
+            "based in the us",
+            "based in the u.s.",
+            "based in the united states",
+            "located in the us",
+            "located in the united states",
+            "must be located in the united states",
+            "must reside in the us",
+            "must reside in the united states",
+            "us only",
+            "usa only",
+            "us residents only",
+            "us citizens only",
+            "us citizen or green card",
+            "authorized to work in the us",
+            "authorized to work in the united states",
+            "work authorization in the united states",
+            "must be authorized to work in the us",
+            "green card holder",
+            "eligible to work in the united states",
+        ),
+    ),
+    "ca": (
+        frozenset({"ca"}),
+        (
+            "canada only",
+            "based in canada",
+            "must be located in canada",
+            "canadian residents only",
+        ),
+    ),
+    "gb": (
+        frozenset({"gb", "uk"}),
+        (
+            "uk based",
+            "uk-based",
+            "based in the uk",
+            "united kingdom only",
+            "uk only",
+            "must be located in the uk",
+        ),
+    ),
+    "eu": (
+        frozenset({"es", "de", "fr", "it", "nl", "pt", "pl", "ie", "be", "at", "se", "dk", "fi"}),
+        (
+            "eu only",
+            "eu-based",
+            "based in the eu",
+            "european union only",
+            "must be based in europe",
+            "europe only",
+            "eu residents only",
+            "must be located in europe",
+        ),
+    ),
+    "in": (
+        frozenset({"in"}),
+        (
+            "india only",
+            "based in india",
+            "must be located in india",
+        ),
+    ),
+}
+
+
+def _hiring_user_iso(user_country: str, user_locations: list[str] | None) -> set[str]:
+    """Deriva los códigos ISO2 del usuario desde su país y ubicaciones de texto."""
+    iso: set[str] = set()
+    uc = (user_country or "").strip().lower()
+    if uc and len(uc) == 2:
+        iso.add(uc)
+    for loc in user_locations or []:
+        code = _gob_country_name_to_iso(loc)
+        if code:
+            iso.add(code)
+    return iso
+
+
+def linkedin_hiring_location_ok(
+    text: str,
+    user_country: str = "",
+    user_locations: list[str] | None = None,
+) -> bool | None:
+    """
+    Evalúa si un post #Hiring es compatible con la ubicación del usuario.
+
+    Devuelve:
+      True  → abierto / compatible (LATAM, global, o menciona el país del usuario)
+      False → claramente restringido a otra región (p. ej. "US based" para AR)
+      None  → ambiguo (conviene apoyarse en la IA)
+    """
+    if not text:
+        return None
+    low = _norm(text)
+    user_iso = _hiring_user_iso(user_country, user_locations)
+
+    # 1) Apertura global / LATAM → permitido.
+    if any(term in low for term in _HIRING_OPEN_TERMS):
+        return True
+
+    # 2) Restricciones regionales explícitas.
+    restricted_hit = False
+    for _, (allowed_iso, phrases) in _HIRING_REGION_RESTRICTIONS.items():
+        if any(p in low for p in phrases):
+            restricted_hit = True
+            # Si el usuario pertenece a la región permitida → OK.
+            if user_iso & allowed_iso:
+                return True
+    if restricted_hit:
+        # Se detectó una restricción y el usuario no encaja en ninguna.
+        return False
+
+    # 3) Menciona explícitamente el país del usuario → permitido.
+    if user_iso:
+        for iso in user_iso:
+            for name, code in _GOB_NAME_TO_ISO.items():
+                if code == iso and name in low:
+                    return True
+
+    # 4) Sin señales claras → ambiguo.
+    return None
+
+
 def passes_language_filters(
     analyzed: dict[str, Any],
     posting_languages: str | list[str] | None,

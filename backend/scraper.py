@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlsplit
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
@@ -459,6 +459,7 @@ DISCARD_REASON_LABELS = {
     "language": "idioma",
     "salary": "salario",
     "duplicate": "duplicada",
+    "invalid_link": "enlace no específico",
 }
 
 
@@ -479,9 +480,14 @@ def _partition_jobs(
     discarded: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     for job in jobs:
-        reason = _discard_reason(
-            job, filters, skip_query=skip_query, source=source
-        )
+        if source == "linkedin_hiring" and not is_linkedin_hiring_permalink(
+            str(job.get("url") or "")
+        ):
+            reason = "invalid_link"
+        else:
+            reason = _discard_reason(
+                job, filters, skip_query=skip_query, source=source
+            )
         if reason:
             counts[reason] = counts.get(reason, 0) + 1
             if len(discarded) < 12:
@@ -819,12 +825,26 @@ LINKEDIN_TITLE_SELECTORS = (
     "h3",
 )
 
+# Orden importa: primero los contenedores dedicados de empresa, luego el link
+# a /company/ (muy confiable), y recién al final los genéricos (h4/subtitle).
 LINKEDIN_COMPANY_SELECTORS = (
-    ".job-card-container__primary-description",
     ".job-card-container__company-name",
-    "h4",
+    ".artdeco-entity-lockup__subtitle",
+    ".job-card-container__primary-description",
+    "a.job-card-container__company-name",
+    "span.job-card-container__primary-description",
     ".base-search-card__subtitle",
+    ".base-search-card__subtitle a",
     "a[href*='/company/']",
+    "h4",
+)
+
+# Link directo a la página de empresa: su texto es el nombre más fiable.
+LINKEDIN_COMPANY_LINK_SELECTORS = (
+    "a.job-card-container__company-name",
+    ".artdeco-entity-lockup__subtitle a[href*='/company/']",
+    "a[href*='/company/']",
+    ".base-search-card__subtitle a[href*='/company/']",
 )
 
 LINKEDIN_LOCATION_SELECTORS = (
@@ -863,6 +883,61 @@ def _query_first(card: Any, selectors: tuple[str, ...]) -> Any:
         if el:
             return el
     return None
+
+
+def _clean_company_text(raw: str) -> str:
+    """
+    Normaliza el nombre de empresa que LinkedIn suele ensuciar:
+    - Líneas/palabras duplicadas por spans de accesibilidad ("Google\nGoogle").
+    - Sufijos de ubicación tras separadores ("Empresa · Buenos Aires").
+    - Ruido tipo "Verificación" / "con conexiones".
+    """
+    if not raw:
+        return ""
+    text = " ".join(raw.split())
+    # Quitar sufijo de ubicación/metadatos tras separadores comunes.
+    for sep in (" · ", " • ", " — ", " – ", " | "):
+        if sep in text:
+            text = text.split(sep, 1)[0].strip()
+    # LinkedIn repite el nombre (accesibilidad): "Acme Acme" o "Acme\nAcme".
+    parts = [p.strip() for p in re.split(r"[\n\r]+", raw) if p.strip()]
+    if parts:
+        first = " ".join(parts[0].split())
+        if first and (first == text or text.startswith(first)):
+            text = first
+    # Colapsar duplicado exacto "Acme Acme" → "Acme".
+    half = len(text) // 2
+    if half and text[:half].strip() == text[half:].strip():
+        text = text[:half].strip()
+    return text.strip(" ·•—–|").strip()
+
+
+def _extract_linkedin_company(card: Any) -> str:
+    """
+    Devuelve el nombre de empresa de una card de LinkedIn Jobs.
+
+    Prioriza el link a /company/ (texto = nombre real), luego selectores
+    dedicados, y aplica limpieza para evitar duplicados/ubicaciones.
+    """
+    for sel in LINKEDIN_COMPANY_LINK_SELECTORS:
+        try:
+            el = card.query_selector(sel)
+        except Exception:  # noqa: BLE001
+            el = None
+        if el:
+            name = _clean_company_text((el.inner_text() or "").strip())
+            if not name:
+                # Algunos links traen el nombre solo en aria-label.
+                name = _clean_company_text((el.get_attribute("aria-label") or "").strip())
+            if name and len(name) >= 2:
+                return name
+
+    el = _query_first(card, LINKEDIN_COMPANY_SELECTORS)
+    if el:
+        name = _clean_company_text((el.inner_text() or "").strip())
+        if name and len(name) >= 2:
+            return name
+    return ""
 
 
 def _linkedin_query_params(
@@ -1047,12 +1122,11 @@ def _linkedin_extract_cards(
     for card in cards:
         try:
             title_el = _query_first(card, LINKEDIN_TITLE_SELECTORS) or card.query_selector("a")
-            company_el = _query_first(card, LINKEDIN_COMPANY_SELECTORS)
             loc_el = _query_first(card, LINKEDIN_LOCATION_SELECTORS)
             link_el = _query_first(card, LINKEDIN_LINK_SELECTORS)
 
             title = (title_el.inner_text() if title_el else "").strip()
-            company = (company_el.inner_text() if company_el else "").strip()
+            company = _extract_linkedin_company(card)
             location = (loc_el.inner_text() if loc_el else "").strip()
             href = (link_el.get_attribute("href") if link_el else "") or ""
             if href.startswith("/"):
@@ -1307,6 +1381,196 @@ def _linkedin_hiring_query_ok(
     return False
 
 
+_ACTIVITY_RE = re.compile(r"urn:li:activity:(\d{6,})")
+_UGC_POST_RE = re.compile(r"urn:li:ugcPost:(\d{6,})")
+_ACTIVITY_LOOSE_RE = re.compile(r"activity[:\-](\d{6,})")
+_POSTS_ID_RE = re.compile(r"-(\d{15,})-[A-Za-z0-9_]+/?$")
+_FEED_POST_PATH_RE = re.compile(
+    r"^/feed/update/urn:li:(?:activity|ugcPost):\d{6,}/?$",
+    re.IGNORECASE,
+)
+
+
+def is_linkedin_hiring_permalink(url: str) -> bool:
+    """
+    True únicamente para una publicación individual de LinkedIn.
+
+    Rechaza expresamente páginas de empresa/showcase, `/company/.../posts/`,
+    perfiles y búsquedas aunque contengan la palabra `posts`.
+    """
+    try:
+        parsed = urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if host not in {"linkedin.com", "www.linkedin.com"}:
+        return False
+    path = parsed.path or ""
+    if _FEED_POST_PATH_RE.fullmatch(path):
+        return True
+    return path.startswith("/posts/") and bool(_POSTS_ID_RE.search(path))
+
+
+def _linkedin_hiring_card_scopes(card: Any) -> list[Any]:
+    """
+    Devuelve la card y sus contenedores de post cercanos.
+
+    En el layout SDUI, `_linkedin_hiring_collect_cards` puede devolver solo la
+    caja de texto o el actor. El permalink/data-urn suele estar en un ancestro.
+    """
+    scopes: list[Any] = [card]
+    closest_selectors = (
+        "div.feed-shared-update-v2",
+        "div[data-id*='urn:li:activity']",
+        "div[data-urn*='activity']",
+        "div[data-urn*='ugcPost']",
+        "div.reusable-search__result-container",
+        "li.reusable-search__result-container",
+        "div[role='listitem']",
+    )
+    for selector in closest_selectors:
+        try:
+            handle = card.evaluate_handle(
+                "(el, selector) => el.closest(selector)", selector
+            )
+            ancestor = handle.as_element()
+        except Exception:  # noqa: BLE001
+            ancestor = None
+        if ancestor and all(ancestor != scope for scope in scopes):
+            scopes.append(ancestor)
+    return scopes
+
+
+def _extract_activity_id(card: Any) -> str:
+    """
+    Busca el id numérico de la 'activity' del post en atributos data-* y hrefs,
+    tanto en la card como en sus descendientes (el DOM SDUI la esconde profundo).
+    """
+    attr_names = ("data-urn", "data-id", "data-activity-urn", "data-entity-urn")
+    nodes: list[Any] = []
+    scopes = _linkedin_hiring_card_scopes(card)
+    for scope in scopes:
+        nodes.append(scope)
+        try:
+            nodes += scope.query_selector_all(
+                "[data-urn], [data-id], [data-activity-urn], [data-entity-urn]"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    for el in nodes[:60]:
+        for attr in attr_names:
+            try:
+                val = el.get_attribute(attr) or ""
+            except Exception:  # noqa: BLE001
+                val = ""
+            if not val:
+                continue
+            m = _ACTIVITY_RE.search(val) or _ACTIVITY_LOOSE_RE.search(val)
+            if m:
+                return m.group(1)
+
+    # Buscar en hrefs de anclas relacionadas al post.
+    anchors: list[Any] = []
+    for scope in scopes:
+        try:
+            anchors += scope.query_selector_all(
+                "a[href*='activity'], a[href*='/posts/'], a[href*='/feed/update/']"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    for a in anchors[:40]:
+        try:
+            href = a.get_attribute("href") or ""
+        except Exception:  # noqa: BLE001
+            href = ""
+        m = (
+            _ACTIVITY_RE.search(href)
+            or _ACTIVITY_LOOSE_RE.search(href)
+            or _POSTS_ID_RE.search(href)
+        )
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _extract_ugc_post_id(card: Any) -> str:
+    """Extrae el id `ugcPost` usado por algunos layouts nuevos de LinkedIn."""
+    attrs = ("data-urn", "data-id", "data-activity-urn", "data-entity-urn")
+    for scope in _linkedin_hiring_card_scopes(card):
+        nodes: list[Any] = [scope]
+        try:
+            nodes += scope.query_selector_all(
+                "[data-urn], [data-id], [data-activity-urn], [data-entity-urn]"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        for node in nodes[:60]:
+            for attr in attrs:
+                try:
+                    value = node.get_attribute(attr) or ""
+                except Exception:  # noqa: BLE001
+                    value = ""
+                match = _UGC_POST_RE.search(value)
+                if match:
+                    return match.group(1)
+    return ""
+
+
+def _extract_hiring_permalink(card: Any) -> str:
+    """
+    Devuelve el link al POST individual (lo que LinkedIn ofrece con
+    'Copiar enlace de la publicación'), no a la búsqueda ni al perfil.
+
+    Prioridad:
+      1) href /posts/… ya presente en el DOM (formato canónico de compartir).
+      2) permalink construido desde el id de activity → /feed/update/…
+      3) href /feed/update/… presente en el DOM.
+      4) cadena vacía si LinkedIn no expone un identificador directo.
+
+    Nunca devuelve la URL de resultados de búsqueda.
+    """
+    def _abs(href: str) -> str:
+        href = (href or "").strip()
+        if href.startswith("/"):
+            href = "https://www.linkedin.com" + href
+        return href.split("?", 1)[0]
+
+    # 1) /posts/ es exactamente el link que genera el botón de compartir.
+    scopes = _linkedin_hiring_card_scopes(card)
+    for scope in scopes:
+        try:
+            el = scope.query_selector("a[href*='/posts/']")
+        except Exception:  # noqa: BLE001
+            el = None
+        if el:
+            href = _abs(el.get_attribute("href") or "")
+            if is_linkedin_hiring_permalink(href):
+                return href
+
+    # 2) Construir permalink canónico y estable desde el id de activity.
+    act = _extract_activity_id(card)
+    if act:
+        return f"https://www.linkedin.com/feed/update/urn:li:activity:{act}/"
+
+    # LinkedIn SDUI también identifica publicaciones propias como ugcPost.
+    ugc_post = _extract_ugc_post_id(card)
+    if ugc_post:
+        return f"https://www.linkedin.com/feed/update/urn:li:ugcPost:{ugc_post}/"
+
+    # 3) Último anchor de post en el DOM (evitando perfiles /in/).
+    for scope in scopes:
+        try:
+            el = scope.query_selector("a[href*='/feed/update/']")
+        except Exception:  # noqa: BLE001
+            el = None
+        if el:
+            href = _abs(el.get_attribute("href") or "")
+            if is_linkedin_hiring_permalink(href):
+                return href
+
+    return ""
+
+
 def scrape_linkedin_hiring(
     browser: BrowserTarget,
     profile: dict[str, Any],
@@ -1328,6 +1592,7 @@ def scrape_linkedin_hiring(
     cards_seen = 0
     skipped_no_intent = 0
     skipped_query = 0
+    skipped_no_permalink = 0
 
     try:
         # Warm-up: entrar al feed con la sesión antes de buscar
@@ -1404,38 +1669,13 @@ def scrape_linkedin_hiring(
                             skipped_query += 1
                             continue
 
-                        href = ""
-                        try:
-                            urn = (
-                                card.get_attribute("data-urn")
-                                or card.get_attribute("data-id")
-                                or ""
-                            )
-                        except Exception:  # noqa: BLE001
-                            urn = ""
-                        if urn and "activity:" in urn:
-                            # Permalink sintético estable cuando el DOM SDUI
-                            # no expone <a href="/posts/...">
-                            act = urn.split("activity:")[-1].split(",")[0].strip()
-                            if act.isdigit():
-                                href = f"https://www.linkedin.com/feed/update/urn:li:activity:{act}"
-
+                        href = _extract_hiring_permalink(card)
                         if not href:
-                            link_el = (
-                                card.query_selector("a[href*='/posts/']")
-                                or card.query_selector("a[href*='/feed/update/']")
-                                or card.query_selector("a[href*='/recent-activity/']")
-                                or card.query_selector("a.app-aware-link[href*='/in/']")
-                            )
-                            href = (
-                                (link_el.get_attribute("href") if link_el else "")
-                                or ""
-                            )
-                        if href and href.startswith("/"):
-                            href = "https://www.linkedin.com" + href
-                        if "?" in href:
-                            href = href.split("?", 1)[0]
-                        key = href or text[:160]
+                            # Una búsqueda muestra muchos posts y no identifica
+                            # la oferta. No publicar resultados sin permalink.
+                            skipped_no_permalink += 1
+                            continue
+                        key = href
                         if key in seen:
                             continue
                         seen.add(key)
@@ -1495,7 +1735,7 @@ def scrape_linkedin_hiring(
                                 "Post de LinkedIn con intención de contratación. "
                                 f"Búsqueda: {keyword}.\n\n{text[:4000]}"
                             ),
-                            "url": href or url,
+                            "url": href,
                             "source": "linkedin_hiring",
                             "published_at": published_at,
                         }
@@ -1518,10 +1758,11 @@ def scrape_linkedin_hiring(
     if not jobs:
         logger.info(
             "LinkedIn #Hiring vacío (cards=%s, skip_intent=%s, skip_query=%s, "
-            "authwall=%s, url=%s, sesión=%s)",
+            "skip_permalink=%s, authwall=%s, url=%s, sesión=%s)",
             cards_seen,
             skipped_no_intent,
             skipped_query,
+            skipped_no_permalink,
             hit_authwall,
             last_url,
             _linkedin_session_ready(),

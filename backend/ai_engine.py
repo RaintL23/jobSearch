@@ -294,7 +294,9 @@ def batch_analyze_relevance(
     jobs_block = ""
     for i, job in enumerate(batch, 1):
         reqs_snippet = str(job.get("requirements") or "")[:200]
-        desc_snippet = str(job.get("description") or "")[:250]
+        # Descripción más amplia: en posts #Hiring la pista de ubicación
+        # (US based, LATAM, remoto, etc.) puede aparecer en cualquier parte.
+        desc_snippet = str(job.get("description") or "")[:500]
         jobs_block += (
             f"\n[{i}] {job.get('title', '')} | {job.get('company', '')} | "
             f"Loc: {job.get('location', '?')} | "

@@ -527,6 +527,25 @@ function jobId(job, idx) {
   return job.url || `${job.title}|${job.company}|${idx}`;
 }
 
+function isDirectLinkedInPostUrl(url) {
+  try {
+    const parsed = new URL(String(url || ""));
+    if (!["linkedin.com", "www.linkedin.com"].includes(parsed.hostname.toLowerCase())) return false;
+    const path = parsed.pathname;
+    const feedPost = /^\/feed\/update\/urn:li:(activity|ugcPost):\d{6,}\/?$/i.test(path);
+    const sharedPost = /^\/posts\/.+-\d{15,}-[A-Za-z0-9_]+\/?$/.test(path);
+    return feedPost || sharedPost;
+  } catch (_) {
+    return false;
+  }
+}
+
+function usableJobUrl(job) {
+  if (!job?.url) return "";
+  if (job.source === "linkedin_hiring" && !isDirectLinkedInPostUrl(job.url)) return "";
+  return job.url;
+}
+
 function setStatus({ summary, detail, tone = "idle", expandLog = false }) {
   document.getElementById("statusSummary").innerHTML = summary;
   if (detail != null) document.getElementById("statusDetail").innerHTML = detail;
@@ -776,6 +795,7 @@ function renderTableRows(list) {
     const tier = tierOf(pct);
     const src = sourceLabel(job.source);
     const company = job.company || "Empresa no indicada";
+    const directUrl = usableJobUrl(job);
     const pub = formatPublishedParts(job.published_at);
     const id = jobId(job, idx);
     const rowState = getRowState(id);
@@ -802,9 +822,9 @@ function renderTableRows(list) {
       </td>
       <td>
         <div class="actions-cell">
-          ${job.url
-            ? `<a class="act-btn view${rowState.visited ? " visited" : ""}" href="${escapeHtml(job.url)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-visit="${escapeHtml(id)}" title="${rowState.visited ? "Ya visitada" : "Ver oferta"}">↗</a>`
-            : `<button type="button" class="act-btn view" disabled title="Sin link">↗</button>`}
+          ${directUrl
+            ? `<a class="act-btn view${rowState.visited ? " visited" : ""}" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-visit="${escapeHtml(id)}" title="${rowState.visited ? "Ya visitada" : "Ver oferta"}">↗</a>`
+            : `<button type="button" class="act-btn view" disabled title="Sin enlace directo al post">↗</button>`}
           <button type="button" class="act-btn cover" data-cover-gen="${idx}" title="Cover letter">CL</button>
           <button type="button" class="act-btn interest${rowState.status === "interested" ? " active" : ""}" data-interest="${escapeHtml(id)}" title="Me interesa">★</button>
           <button type="button" class="act-btn not-interest${rowState.status === "not_interested" ? " active" : ""}" data-not-interest="${escapeHtml(id)}" title="No me interesa">✕</button>
