@@ -1,8 +1,8 @@
-"""Tests de backend.query_match: normalización y relevancia de ofertas."""
+"""Tests de backend.core.query_match: normalización y relevancia de ofertas."""
 
 from __future__ import annotations
 
-from backend.query_match import (
+from backend.core.query_match import (
     extract_location,
     matches_search_queries,
     normalize_query_text,

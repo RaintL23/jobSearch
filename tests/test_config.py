@@ -1,8 +1,8 @@
-"""Tests de backend.config: settings tipadas, derivaciones y overrides."""
+"""Tests de backend.core.config: settings tipadas, derivaciones y overrides."""
 
 from __future__ import annotations
 
-from backend.config import DEFAULT_FX_TO_USD, Settings, get_settings
+from backend.core.config import DEFAULT_FX_TO_USD, Settings, get_settings
 
 
 def _settings(**kwargs) -> Settings:

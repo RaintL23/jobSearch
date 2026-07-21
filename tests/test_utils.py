@@ -1,10 +1,10 @@
-"""Tests de backend.utils: slugify, parseo de JSON del LLM y lectura de PDF."""
+"""Tests de backend.core.utils: slugify, parseo de JSON del LLM y lectura de PDF."""
 
 from __future__ import annotations
 
 import pytest
 
-from backend.utils import (
+from backend.core.utils import (
     PDFExtractionError,
     extract_text_from_pdf,
     parse_llm_json,

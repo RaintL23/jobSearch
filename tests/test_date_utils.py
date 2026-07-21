@@ -1,10 +1,10 @@
-"""Tests de backend.date_utils: parseo de fechas y ventanas de antigüedad."""
+"""Tests de backend.core.dates: parseo de fechas y ventanas de antigüedad."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from backend.date_utils import (
+from backend.core.dates import (
     hours_since_published,
     parse_published_at,
     parse_relative_published,
