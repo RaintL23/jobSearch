@@ -48,7 +48,7 @@ echo.
 echo  Abriendo navegador para iniciar sesion en LinkedIn...
 echo  Completa el login en la ventana del navegador.
 echo.
-python -m backend.login_session linkedin
+python -m backend.auth.login linkedin
 goto :FIN_OK
 
 :LOGIN_COMPUTRABAJO
@@ -57,7 +57,7 @@ echo.
 echo  Abriendo navegador para iniciar sesion en Computrabajo...
 echo  Completa el login en la ventana del navegador.
 echo.
-python -m backend.login_session computrabajo
+python -m backend.auth.login computrabajo
 goto :FIN_OK
 
 :LOGIN_AMBOS
@@ -66,12 +66,12 @@ echo.
 echo  Paso 1/2 - LinkedIn
 echo  Completa el login y cierra la ventana del navegador.
 echo.
-python -m backend.login_session linkedin
+python -m backend.auth.login linkedin
 echo.
 echo  Paso 2/2 - Computrabajo
 echo  Completa el login y cierra la ventana del navegador.
 echo.
-python -m backend.login_session computrabajo
+python -m backend.auth.login computrabajo
 goto :FIN_OK
 
 :FIN_OK

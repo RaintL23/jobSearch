@@ -46,7 +46,7 @@ case "$OPCION" in
     echo "  Abriendo navegador para iniciar sesion en LinkedIn..."
     echo "  Completa el login en la ventana del navegador."
     echo ""
-    python -m backend.login_session linkedin
+    python -m backend.auth.login linkedin
     ;;
   2)
     activate_venv
@@ -54,7 +54,7 @@ case "$OPCION" in
     echo "  Abriendo navegador para iniciar sesion en Computrabajo..."
     echo "  Completa el login en la ventana del navegador."
     echo ""
-    python -m backend.login_session computrabajo
+    python -m backend.auth.login computrabajo
     ;;
   3)
     activate_venv
@@ -62,12 +62,12 @@ case "$OPCION" in
     echo "  Paso 1/2 - LinkedIn"
     echo "  Completa el login y cierra la ventana del navegador."
     echo ""
-    python -m backend.login_session linkedin
+    python -m backend.auth.login linkedin
     echo ""
     echo "  Paso 2/2 - Computrabajo"
     echo "  Completa el login y cierra la ventana del navegador."
     echo ""
-    python -m backend.login_session computrabajo
+    python -m backend.auth.login computrabajo
     ;;
   *)
     echo "  Opcion no valida."

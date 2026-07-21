@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend import auth_sessions
+from backend.auth import sessions as auth_sessions
 
 
 def _create_linkedin_session(tmp_path, *, mode: str | None = None) -> None:

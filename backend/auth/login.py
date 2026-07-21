@@ -2,10 +2,10 @@
 CLI: capturar sesión desde Chrome/Edge (o Chromium).
 
 Uso:
-  python -m backend.login_session linkedin
-  python -m backend.login_session computrabajo --force-restart
-  python -m backend.login_session status
-  python -m backend.login_session clear linkedin
+  python -m backend.auth.login linkedin
+  python -m backend.auth.login computrabajo --force-restart
+  python -m backend.auth.login status
+  python -m backend.auth.login clear linkedin
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import json
 import logging
 import sys
 
-from backend.auth_sessions import (
+from backend.auth.sessions import (
     AUTH_SITES,
     BrowserRestartRequired,
     cdp_status,
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "clear":
         site = args.site
         if not site:
-            print("Indicá el sitio: python -m backend.login_session clear linkedin", file=sys.stderr)
+            print("Indicá el sitio: python -m backend.auth.login clear linkedin", file=sys.stderr)
             return 2
         print(json.dumps(clear_session(site), indent=2, ensure_ascii=False))
         return 0
@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     except BrowserRestartRequired as exc:
         print(str(exc), file=sys.stderr)
         print(
-            "\nReintentá con: python -m backend.login_session "
+            "\nReintentá con: python -m backend.auth.login "
             f"{site} --force-restart",
             file=sys.stderr,
         )

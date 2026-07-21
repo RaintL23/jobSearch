@@ -28,7 +28,7 @@ from typing import Any
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
-from backend.config import get_settings
+from backend.core.config import get_settings
 
 _IS_MAC = sys.platform == "darwin"
 _IS_WIN = sys.platform == "win32"
