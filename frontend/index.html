@@ -218,6 +218,7 @@
   <div class="modal-panel modal-panel--narrow">
     <div class="modal-head">
       <h3 id="apiKeyModalTitle">Configurar API Key de Gemini</h3>
+      <button id="btnCloseApiKey" type="button" class="icon-btn modal-close" aria-label="Cerrar">&times;</button>
     </div>
     <div class="modal-body">
       <p class="modal-desc">
@@ -247,7 +248,8 @@
     </div>
     <div class="modal-foot">
       <span id="apiKeyStatus" class="api-key-status"></span>
-      <button id="btnSaveApiKey" type="button" class="btn-primary">
+      <button id="btnCancelApiKey" type="button" class="btn-ghost-sm light">Cancelar</button>
+      <button id="btnSaveApiKey" type="button" class="btn-primary modal-primary">
         <span id="apiKeyBtnLabel">Guardar y continuar</span>
         <span id="apiKeySpinner" class="spinner hidden"></span>
       </button>

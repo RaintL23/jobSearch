@@ -29,6 +29,9 @@ const emptyNote = document.getElementById("emptyNote");
 const statusStrip = document.getElementById("statusStrip");
 const logPanel = document.getElementById("logPanel");
 
+const DEFAULT_DOC_TITLE = "AI Job Scraper & Matcher";
+let titleFlashTimer = null;
+
 let currentJobs = [];
 let displayJobs = [];
 let profileReady = false;
@@ -113,6 +116,89 @@ function show(el, msg) {
   el.textContent = msg || "";
   el.classList.toggle("hidden", !msg);
 }
+
+function stopTitleFlash() {
+  if (titleFlashTimer) {
+    clearInterval(titleFlashTimer);
+    titleFlashTimer = null;
+  }
+  document.title = DEFAULT_DOC_TITLE;
+}
+
+/** Titilea el título de la ventana (efecto aviso en barra de tareas / pestaña). */
+function startTitleFlash(message) {
+  stopTitleFlash();
+  let on = true;
+  document.title = message;
+  titleFlashTimer = setInterval(() => {
+    document.title = on ? `● ${message}` : DEFAULT_DOC_TITLE;
+    on = !on;
+  }, 900);
+}
+
+/**
+ * Aviso al SO cuando termina la búsqueda:
+ * - Notificación nativa de Windows (toast; suele hacer brillar el ícono)
+ * - Titileo del título si la ventana está en segundo plano
+ */
+async function ensureNotificationPermission() {
+  if (!("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted") return "granted";
+  if (Notification.permission === "denied") return "denied";
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return Notification.permission;
+  }
+}
+
+function notifySearchFinished({ count = 0, ok = true, error = "" } = {}) {
+  const title = ok ? "Búsqueda terminada" : "Búsqueda con error";
+  const body = ok
+    ? `${count} oferta(s) listas para revisar.`
+    : String(error || "Revisá el panel de progreso.").slice(0, 180);
+
+  if (document.hidden || !document.hasFocus()) {
+    startTitleFlash(ok ? `Listo · ${count} ofertas` : "Error en la búsqueda");
+  }
+
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  try {
+    const n = new Notification(title, {
+      body,
+      tag: "jobsearch-finished",
+      renotify: true,
+      requireInteraction: true,
+      silent: false,
+    });
+    n.onclick = () => {
+      try {
+        window.focus();
+      } catch {
+        /* ignore */
+      }
+      stopTitleFlash();
+      n.close();
+    };
+    if (!document.hidden && document.hasFocus()) {
+      setTimeout(() => {
+        try {
+          n.close();
+        } catch {
+          /* ignore */
+        }
+      }, 8000);
+    }
+  } catch {
+    /* algunos perfiles de Edge/Chrome bloquean Notification */
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) stopTitleFlash();
+});
+window.addEventListener("focus", () => stopTitleFlash());
 
 function setStepOpen(stepEl, open) {
   stepEl.classList.toggle("open", open);
@@ -826,6 +912,9 @@ function renderTableRows(list) {
             ? `<a class="act-btn view${rowState.visited ? " visited" : ""}" href="${escapeHtml(directUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-visit="${escapeHtml(id)}" title="${rowState.visited ? "Ya visitada" : "Ver oferta"}">↗</a>`
             : `<button type="button" class="act-btn view" disabled title="Sin enlace directo al post">↗</button>`}
           <button type="button" class="act-btn cover" data-cover-gen="${idx}" title="Cover letter">CL</button>
+          ${job.contact_email
+            ? `<button type="button" class="act-btn email" data-email-gen="${idx}" title="Borrador de email · ${escapeHtml(job.contact_email)}">✉</button>`
+            : ""}
           <button type="button" class="act-btn interest${rowState.status === "interested" ? " active" : ""}" data-interest="${escapeHtml(id)}" title="Me interesa">★</button>
           <button type="button" class="act-btn not-interest${rowState.status === "not_interested" ? " active" : ""}" data-not-interest="${escapeHtml(id)}" title="No me interesa">✕</button>
         </div>
@@ -1044,6 +1133,8 @@ btnSearch.addEventListener("click", async () => {
 
   setLoading(btnSearch, document.getElementById("searchLabel"), document.getElementById("searchSpinner"), true, "Iniciar búsqueda", "Buscando…");
   btnProcess.disabled = true;
+  // Pedir permiso de notificaciones Windows (toast + brillo en la barra).
+  ensureNotificationPermission();
   setStatus({
     summary: `<strong>Buscando…</strong> multi-fuente en curso`,
     detail: `API: <code>${escapeHtml(API_BASE)}</code>`,
@@ -1051,6 +1142,9 @@ btnSearch.addEventListener("click", async () => {
     expandLog: true,
   });
   appendSearchProgress("Lanzando búsqueda multi-fuente…");
+  let finishedOk = false;
+  let finishedCount = 0;
+  let finishedError = "";
   try {
     const res = await fetch(`${API_BASE}/search-jobs-stream`, {
       method: "POST",
@@ -1098,22 +1192,31 @@ btnSearch.addEventListener("click", async () => {
             : `Listo · ${evt.count || (evt.jobs || []).length} oferta(s) encontradas.`;
         appendSearchProgress(analyzeMsg, { tone: "ok" });
         renderJobs(evt.jobs || [], evt.sources || {});
+        finishedOk = true;
+        finishedCount = evt.count || (evt.jobs || []).length || 0;
       }
     });
     if (!finished) {
       throw new Error("La búsqueda terminó sin resultados finales.");
     }
   } catch (err) {
-    show(document.getElementById("step2Error"), err.message || String(err));
+    finishedOk = false;
+    finishedError = err.message || String(err);
+    show(document.getElementById("step2Error"), finishedError);
     setStatus({
       summary: `<strong>Error</strong> en la búsqueda`,
-      detail: escapeHtml(err.message || String(err)),
+      detail: escapeHtml(finishedError),
       tone: "warn",
       expandLog: true,
     });
   } finally {
     setLoading(btnSearch, document.getElementById("searchLabel"), document.getElementById("searchSpinner"), false, "Iniciar búsqueda", "Buscando…");
     btnProcess.disabled = false;
+    notifySearchFinished({
+      ok: finishedOk,
+      count: finishedCount,
+      error: finishedError,
+    });
   }
 });
 
@@ -1174,39 +1277,87 @@ resultsBody.addEventListener("click", async (e) => {
   }
 
   const btn = e.target.closest("[data-cover-gen]");
-  if (!btn) return;
-  const idx = Number(btn.getAttribute("data-cover-gen"));
-  const job = currentJobs[idx];
-  if (!job) return;
+  if (btn) {
+    const idx = Number(btn.getAttribute("data-cover-gen"));
+    const job = currentJobs[idx];
+    if (!job) return;
 
-  const profile = lastProfile || (() => { try { return getProfile(); } catch { return null; } })();
-  if (!profile) {
-    show(document.getElementById("step2Error"), "Necesitas un perfil válido para generar la carta.");
+    const profile = lastProfile || (() => { try { return getProfile(); } catch { return null; } })();
+    if (!profile) {
+      show(document.getElementById("step2Error"), "Necesitas un perfil válido para generar la carta.");
+      return;
+    }
+
+    const prev = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "…";
+    try {
+      const res = await fetch(`${API_BASE}/generate-cover-letter`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile, job }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+      job.cover_letter = data.cover_letter || "";
+      coverTitle.textContent = `Cover Letter · ${job.title || "Oferta"}`;
+      coverBody.textContent = job.cover_letter;
+      coverModal.classList.add("open");
+    } catch (err) {
+      show(document.getElementById("step2Error"), err.message || String(err));
+      sidebar.classList.remove("collapsed");
+      document.getElementById("sidebarCollapseBtn").textContent = "⟨";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = prev;
+    }
     return;
   }
 
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "…";
+  // PASO 4 · borrador de email (asunto + cuerpo + recordatorio CV) si hay contact_email
+  const emailBtn = e.target.closest("[data-email-gen]");
+  if (!emailBtn) return;
+  const emailIdx = Number(emailBtn.getAttribute("data-email-gen"));
+  const emailJob = currentJobs[emailIdx];
+  if (!emailJob || !emailJob.contact_email) return;
+
+  const emailProfile = lastProfile || (() => { try { return getProfile(); } catch { return null; } })();
+  if (!emailProfile) {
+    show(document.getElementById("step2Error"), "Necesitas un perfil válido para generar el email.");
+    return;
+  }
+
+  const emailPrev = emailBtn.textContent;
+  emailBtn.disabled = true;
+  emailBtn.textContent = "…";
   try {
-    const res = await fetch(`${API_BASE}/generate-cover-letter`, {
+    const res = await fetch(`${API_BASE}/generate-application-email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile, job }),
+      body: JSON.stringify({ profile: emailProfile, job: emailJob }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
-    job.cover_letter = data.cover_letter || "";
-    coverTitle.textContent = `Cover Letter · ${job.title || "Oferta"}`;
-    coverBody.textContent = job.cover_letter;
+    const draft = data.application_email || {};
+    emailJob.application_email = draft;
+    coverTitle.textContent = `Email · ${emailJob.title || "Oferta"}`;
+    coverBody.textContent = [
+      `Para: ${draft.to || emailJob.contact_email}`,
+      `Asunto: ${draft.subject || ""}`,
+      "",
+      draft.body || "",
+      "",
+      "—",
+      draft.cv_reminder || "Recordá adjuntar tu CV en PDF antes de enviar.",
+    ].join("\n");
     coverModal.classList.add("open");
   } catch (err) {
     show(document.getElementById("step2Error"), err.message || String(err));
     sidebar.classList.remove("collapsed");
     document.getElementById("sidebarCollapseBtn").textContent = "⟨";
   } finally {
-    btn.disabled = false;
-    btn.textContent = prev;
+    emailBtn.disabled = false;
+    emailBtn.textContent = emailPrev;
   }
 });
 
@@ -1345,7 +1496,7 @@ async function pollPendingCapture(site) {
       if (Date.now() - started > 90000) throw err;
     }
   }
-  throw new Error("La captura tardó demasiado. Probá python -m backend.login_session " + site + " --force-restart");
+  throw new Error("La captura tardó demasiado. Probá python -m backend.auth.login " + site + " --force-restart");
 }
 
 document.getElementById("authSessionsBody").addEventListener("click", async (e) => {
@@ -1497,9 +1648,15 @@ async function saveApiKey() {
 }
 
 document.getElementById("btnSaveApiKey").addEventListener("click", saveApiKey);
+document.getElementById("btnCancelApiKey").addEventListener("click", closeApiKeyModal);
+document.getElementById("btnCloseApiKey").addEventListener("click", closeApiKeyModal);
 
 apiKeyInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") saveApiKey();
+});
+
+apiKeyModal.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeApiKeyModal();
 });
 
 document.getElementById("apiKeyShow").addEventListener("change", (e) => {
