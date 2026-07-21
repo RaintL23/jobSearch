@@ -1,10 +1,10 @@
-"""Tests de backend.ai_engine con un cliente Gemini falso (sin llamadas reales)."""
+"""Tests de backend.ai.engine con un cliente Gemini falso (sin llamadas reales)."""
 
 from __future__ import annotations
 
 import pytest
 
-from backend import ai_engine
+from backend.ai import engine as ai_engine
 
 
 class _FakeResp:
@@ -64,6 +64,22 @@ def test_cover_letter_plain_text_no_json_mode(monkeypatch):
     letter = ai_engine.generate_cover_letter({"name": "Ada"}, {"title": "Dev"})
     assert "postulo" in letter
     assert client.models.calls[0][1] is None
+
+
+def test_application_email_json(monkeypatch):
+    payload = (
+        '{"subject":"Postulación Backend — Ada",'
+        '"body":"Hola, me interesa el rol. Adjunto mi CV.",'
+        '"cv_reminder":"Recordá adjuntar tu CV en PDF antes de enviar."}'
+    )
+    _patch_client(monkeypatch, payload)
+    draft = ai_engine.generate_application_email(
+        {"name": "Ada", "skills": ["Python"], "roles": ["Backend"]},
+        {"title": "Backend", "company": "ACME", "contact_email": "hr@acme.dev"},
+    )
+    assert draft["to"] == "hr@acme.dev"
+    assert "Postulación" in draft["subject"]
+    assert "CV" in draft["body"] or "CV" in draft["cv_reminder"]
 
 
 def test_missing_api_key_raises(monkeypatch):

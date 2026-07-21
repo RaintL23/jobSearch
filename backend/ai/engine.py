@@ -1,8 +1,8 @@
 """
 Motor de IA con Google Gemini (SDK moderno `google-genai`).
 
-Extracción de perfil desde el CV y generación de cover letters. El cliente se
-crea una sola vez (cacheado) y se reutiliza en cada request.
+Extracción de perfil desde el CV, cover letters y (PASO 4) borradores de email
+de postulación cuando la oferta trae correo de contacto.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from backend.config import get_settings
-from backend.runtime_key import get_runtime_key, has_runtime_key
-from backend.utils import parse_llm_json
+from backend.core.config import get_settings
+from backend.core.runtime_key import get_runtime_key, has_runtime_key
+from backend.core.utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +264,123 @@ Descripción: {str(job.get("description", job.get("offerings", "")))[:3000]}
         raise AIEngineError(f"Error al generar cover letter: {exc}") from exc
 
 
+def generate_application_email(
+    profile: dict[str, Any],
+    job: dict[str, Any],
+) -> dict[str, str]:
+    """
+    PASO 4 · borrador de email cuando la oferta/post trae correo de contacto.
+
+    Devuelve {to, subject, body, cv_reminder}. El body es la descripción del
+    interés / proyecto adaptada a la oferta; cv_reminder recuerda adjuntar el CV.
+    """
+    to_email = str(job.get("contact_email") or "").strip()
+    prompt = f"""Eres un coach de carrera para Latinoamérica.
+El candidato va a postularse por EMAIL a esta oferta. Generá un borrador listo
+para copiar/pegar.
+
+Reglas:
+- Español profesional, tono cercano pero serio.
+- NO inventes experiencia ni empresas que no estén en el perfil.
+- El cuerpo (body) debe ser corto (120-220 palabras): presentarse, por qué
+  encaja con el rol, 1-2 logros alineados a los requisitos, y cierre amable.
+- El asunto (subject) debe ser concreto (máx ~70 caracteres), p. ej.
+  "Postulación Backend Developer — Nombre".
+- Incluí en el body una frase clara pidiendo o indicando que ADJUNTA el CV
+  (el usuario lo adjuntará manualmente; vos solo lo recordás en el texto).
+- Responde SOLO con JSON (sin markdown):
+  {{"subject":"...","body":"...","cv_reminder":"Recordá adjuntar tu CV en PDF antes de enviar."}}
+
+--- PERFIL ---
+Nombre: {profile.get("name", "")}
+Roles: {profile.get("roles", [])}
+Skills: {profile.get("skills", [])}
+Años: {profile.get("experience_years", 0)}
+Resumen: {str(profile.get("summary") or "")[:800]}
+Ubicación: {profile.get("location", "")} / {profile.get("country", "")}
+
+--- OFERTA ---
+Título: {job.get("title", "")}
+Empresa: {job.get("company", "")}
+Ubicación: {job.get("location", "")}
+Email destino: {to_email or "(no indicado)"}
+Requisitos: {str(job.get("requirements", ""))[:1200]}
+Descripción: {str(job.get("description", ""))[:2500]}
+"""
+    try:
+        data = _generate_json(prompt)
+    except Exception as exc:  # noqa: BLE001
+        # Fallback: texto plano si el modelo no devolvió JSON limpio
+        try:
+            text = _generate_text(
+                prompt
+                + "\nSi no podés JSON, respondé exactamente así:\n"
+                "SUBJECT: ...\nBODY:\n...\nCV_REMINDER: ..."
+            )
+            subject, body, reminder = _parse_email_fallback(text)
+            return {
+                "to": to_email,
+                "subject": subject,
+                "body": body,
+                "cv_reminder": reminder,
+            }
+        except AIEngineError:
+            raise
+        except Exception as exc2:  # noqa: BLE001
+            raise AIEngineError(
+                f"Error al generar email de postulación: {exc}; fallback: {exc2}"
+            ) from exc2
+
+    if not isinstance(data, dict):
+        raise AIEngineError("El modelo no devolvió un objeto JSON para el email.")
+    subject = str(data.get("subject") or "").strip()
+    body = str(data.get("body") or "").strip()
+    reminder = str(
+        data.get("cv_reminder")
+        or "Recordá adjuntar tu CV en PDF antes de enviar."
+    ).strip()
+    if not subject or not body:
+        raise AIEngineError("El modelo devolvió un email incompleto (falta asunto o cuerpo).")
+    return {
+        "to": to_email,
+        "subject": subject,
+        "body": body,
+        "cv_reminder": reminder,
+    }
+
+
+def _parse_email_fallback(text: str) -> tuple[str, str, str]:
+    """Parseo simple SUBJECT/BODY/CV_REMINDER si el JSON falla."""
+    subject = ""
+    body = ""
+    reminder = "Recordá adjuntar tu CV en PDF antes de enviar."
+    lines = (text or "").splitlines()
+    mode = ""
+    body_lines: list[str] = []
+    for line in lines:
+        low = line.strip().lower()
+        if low.startswith("subject:"):
+            subject = line.split(":", 1)[1].strip()
+            mode = ""
+            continue
+        if low.startswith("body:"):
+            mode = "body"
+            rest = line.split(":", 1)[1].strip()
+            if rest:
+                body_lines.append(rest)
+            continue
+        if low.startswith("cv_reminder:"):
+            reminder = line.split(":", 1)[1].strip() or reminder
+            mode = ""
+            continue
+        if mode == "body":
+            body_lines.append(line)
+    body = "\n".join(body_lines).strip()
+    if not subject or not body:
+        raise AIEngineError("No se pudo parsear el borrador de email.")
+    return subject, body, reminder
+
+
 def batch_analyze_relevance(
     profile: dict[str, Any],
     jobs: list[dict[str, Any]],
@@ -323,7 +440,7 @@ def batch_analyze_relevance(
 
 # Mantener alias por compatibilidad si algo externo lo importaba
 def analyze_job_match(profile: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Deprecated: usar job_analyzer.analyze_job_local (sin tokens)."""
-    from backend.job_analyzer import analyze_job_local
+    """Deprecated: usar backend.analysis.local.analyze_job_local (sin tokens)."""
+    from backend.analysis.local import analyze_job_local
 
     return analyze_job_local(profile, job)
