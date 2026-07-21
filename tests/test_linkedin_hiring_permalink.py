@@ -1,4 +1,4 @@
-from backend.scraper import _extract_hiring_permalink, is_linkedin_hiring_permalink
+from backend.scraping import _extract_hiring_permalink, is_linkedin_hiring_permalink
 
 
 class _Handle:
@@ -30,6 +30,9 @@ class _Element:
 
     def evaluate_handle(self, _expression, selector):
         return _Handle(self.closest.get(selector))
+
+    def evaluate(self, _expression):
+        return ""
 
 
 def test_hiring_permalink_prefers_posts_url_and_removes_tracking():
@@ -105,3 +108,37 @@ def test_extractor_rejects_company_posts_page():
     card = _Element(selectors={"a[href*='/posts/']": anchor})
 
     assert _extract_hiring_permalink(card) == ""
+
+
+def test_hiring_intent_rejects_open_to_work():
+    from backend.scraping import _linkedin_hiring_intent
+
+    assert _linkedin_hiring_intent(
+        "We're #hiring a Backend Developer Node.js (Portugal, remote). View job"
+    )
+    assert not _linkedin_hiring_intent(
+        "I'm currently open to new opportunities as a Senior PHP Backend Developer. "
+        "Nikita is open to work. View job preferences"
+    )
+
+
+def test_hiring_intent_accepts_truncated_latam_recruiter_post():
+    """
+    Caso real: María Fernanda Spirito — en el feed solo se ve el snippet
+    «NUEVA OPORTUNIDAD | .NET API DEVELOPER …more»; el #Hiring está después.
+    El permalink canónico sí incluye _hiring- en el slug.
+    """
+    from backend.scraping import _linkedin_hiring_intent
+
+    snippet = (
+        "🚀 NUEVA OPORTUNIDAD INTERNACIONAL | .NET API DEVELOPER 🚀 "
+        "¿Sos especialista en .NET Core, AWS y arquitecturas Serverless? "
+        "¿Te gustaría participar …more"
+    )
+    permalink = (
+        "https://www.linkedin.com/posts/spiritomariafernanda_"
+        "hiring-dotnetdeveloper-backenddeveloper-share-7485421228564905985-atO7/"
+    )
+    assert _linkedin_hiring_intent(snippet, permalink=permalink)
+    # Sin permalink y solo snippet corto: "nueva oportunidad" ya alcanza.
+    assert _linkedin_hiring_intent(snippet)

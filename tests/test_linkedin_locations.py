@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.scraper import _is_country_name_location, _linkedin_search_locations
+from backend.scraping import _is_country_name_location, _linkedin_search_locations
 
 
 def test_country_selected_always_includes_country_wide_geo():

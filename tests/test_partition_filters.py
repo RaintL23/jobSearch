@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.scraper import (
+from backend.scraping import (
     _discard_reason,
     _format_source_filter_message,
     _partition_jobs,

@@ -2,6 +2,12 @@
 Fuentes de ofertas vía API pública HTTP (sin Playwright).
 
 GetOnBoard (LATAM tech), Remotive, RemoteOK y Jobicy.
+
+=============================================================================
+PASO 1 · BÚSQUEDA  +  PASO 2 · EXTRACCIÓN CRUDA  (este módulo)
+PASO 3–4 · revisión / clasificación / email → analysis.local + api.app
+(mismo pipeline que LinkedIn / Computrabajo; facilita filtrar después)
+=============================================================================
 """
 
 from __future__ import annotations
@@ -14,12 +20,12 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from backend.config import get_settings
-from backend.date_utils import (
+from backend.core.config import get_settings
+from backend.core.dates import (
     parse_published_at,
     within_posted_window,
 )
-from backend.query_match import matches_search_queries
+from backend.core.query_match import matches_search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -377,11 +383,13 @@ def scrape_getonboard(
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """PASO 1–2 GetOnBoard: search API → jobs crudos (PASO 3–4 en analyze)."""
     filters = dict(filters or {})
     queries = _queries(profile, filters)
     jobs: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    # --- PASO 1 · BÚSQUEDA por keyword ---
     for keyword in queries:
         if len(jobs) >= PER_SOURCE_CAP:
             break
@@ -434,6 +442,7 @@ def scrape_getonboard(
                 loc_bits.append(str(modality))
             location = ", ".join(loc_bits) if loc_bits else "LATAM / Remoto"
 
+            # --- PASO 2 · EXTRACCIÓN CRUDA (campos API sin clasificar) ---
             job = {
                 "title": str(attrs.get("title") or "Sin título")[:200],
                 "company": company,
@@ -460,6 +469,7 @@ def scrape_remotive(
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """PASO 1–2 Remotive (API). PASO 3–4 en analyze_job_local / _analyze_raw_jobs."""
     filters = dict(filters or {})
     terms = _extract_search_terms(profile, filters)
     category = _remotive_category(profile, filters)
@@ -525,6 +535,7 @@ def scrape_remoteok(
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """PASO 1–2 RemoteOK (API). PASO 3–4 en analyze_job_local / _analyze_raw_jobs."""
     filters = dict(filters or {})
     terms = _extract_search_terms(profile, filters)
     try:
@@ -592,6 +603,7 @@ def scrape_jobicy(
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """PASO 1–2 Jobicy (API). PASO 3–4 en analyze_job_local / _analyze_raw_jobs."""
     filters = dict(filters or {})
     terms = _extract_search_terms(profile, filters)
     geo = _jobicy_geo(profile, filters)
