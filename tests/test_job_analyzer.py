@@ -1,12 +1,13 @@
-"""Tests de backend.job_analyzer: salario, match, idiomas y filtros locales."""
+"""Tests de backend.analysis.local: salario, match, idiomas y filtros locales."""
 
 from __future__ import annotations
 
-from backend.job_analyzer import (
+from backend.analysis.local import (
     analyze_job_local,
     compute_match,
     detect_posting_language,
     detect_required_languages,
+    extract_contact_email,
     extract_salary_usd,
     passes_language_filters,
     salary_in_range,
@@ -92,7 +93,7 @@ def test_analyze_job_local_shape():
     job = {
         "title": "Python Data Engineer",
         "company": "ACME",
-        "description": "Requisitos: Python y SQL. Ofrecemos USD 5000. Remoto.",
+        "description": "Requisitos: Python y SQL. Ofrecemos USD 5000. Remoto. Send CV to jobs@acme.dev",
         "url": "https://example.com/job/1",
         "source": "remotive",
     }
@@ -106,8 +107,16 @@ def test_analyze_job_local_shape():
         "posting_language",
         "required_languages",
         "matched_skills",
+        "contact_email",
     ):
         assert key in result
     assert result["title"] == "Python Data Engineer"
     assert isinstance(result["match_percent"], int)
     assert "python" in result["matched_skills"]
+    assert result["contact_email"] == "jobs@acme.dev"
+
+
+def test_extract_contact_email_skips_noise():
+    assert extract_contact_email("mailto:hr@startup.io") == "hr@startup.io"
+    assert extract_contact_email("img@linkedin.com") == ""
+    assert extract_contact_email("sin correo aquí") == ""

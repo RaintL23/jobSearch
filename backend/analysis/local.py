@@ -1,5 +1,15 @@
 """
 Análisis local de ofertas (sin LLM): match, requisitos, salario USD, idiomas.
+
+=============================================================================
+PASO 3 · REVISIÓN DE DETALLES  (todas las fuentes — analyze_job_local)
+=============================================================================
+  A partir de la descripción cruda del PASO 2, extrae:
+    - ubicación, salario, requisitos/skills, idiomas, email de contacto
+  Misma función para LinkedIn Jobs, #Hiring, Computrabajo y APIs.
+
+PASO 4 · CLASIFICACIÓN  (match skills aquí; filtros + email IA en main.py)
+=============================================================================
 """
 
 from __future__ import annotations
@@ -8,8 +18,8 @@ import re
 import unicodedata
 from typing import Any
 
-from backend.config import get_settings
-from backend.query_match import extract_location
+from backend.core.config import get_settings
+from backend.core.query_match import extract_location
 
 # Tasas aproximadas → USD (centralizadas en config; override vía FX_RATES_JSON).
 FX_TO_USD: dict[str, float] = get_settings().fx_to_usd
@@ -23,6 +33,23 @@ OFFER_HEADERS = re.compile(
     r"(?im)^(?:ofrecemos|we offer|beneficios?|benefits?|qué ofrecemos|"
     r"que ofrecemos|condiciones|compensaci[oó]n|salary|salario|"
     r"package|perks)\b.*$"
+)
+
+# PASO 3 · emails en descripción / mailto (cualquier fuente)
+_EMAIL_RE = re.compile(
+    r"(?i)(?:mailto:)?([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})"
+)
+_EMAIL_SKIP_DOMAINS = frozenset(
+    {
+        "example.com",
+        "email.com",
+        "domain.com",
+        "sentry.io",
+        "wixpress.com",
+        "linkedin.com",
+        "getonbrd.com",
+        "computrabajo.com",
+    }
 )
 
 ES_MARKERS = [
@@ -356,6 +383,11 @@ def build_advice(matched: list[str], missing: list[str], job: dict[str, Any]) ->
     lines.append(f"• Adapta la postulación al título «{title}» y a la empresa.")
     if job.get("url"):
         lines.append("• Revisa la oferta original antes de enviar (requisitos pueden cambiar).")
+    if job.get("contact_email"):
+        lines.append(
+            f"• Email de contacto ({job['contact_email']}): "
+            "generá asunto + cuerpo con IA y recordá adjuntar el CV."
+        )
     return "\n".join(lines)
 
 
@@ -378,18 +410,55 @@ def salary_in_range(
     return smax >= fmin and smin <= fmax
 
 
+def extract_contact_email(text: str) -> str:
+    """
+    PASO 3 · busca el primer email usable en el texto de la oferta/post.
+    Aplica a todas las fuentes (mismo parser).
+    """
+    if not text:
+        return ""
+    for match in _EMAIL_RE.finditer(text):
+        email = (match.group(1) or "").strip().lower()
+        if not email or "@" not in email:
+            continue
+        domain = email.rsplit("@", 1)[-1]
+        if domain in _EMAIL_SKIP_DOMAINS:
+            continue
+        if email.endswith((".png", ".jpg", ".gif", ".svg", ".webp")):
+            continue
+        return email
+    return ""
+
+
 def analyze_job_local(profile: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
-    """Análisis completo sin IA para una oferta scrapada."""
+    """
+    PASO 3 · REVISIÓN + match de skills local (PASO 4 parcial).
+
+    Misma función para LinkedIn, #Hiring, Computrabajo y APIs:
+    ubicación, salario, requisitos, email de contacto, match_percent.
+    Filtros de país/idioma y borrador de email con IA → main._analyze_raw_jobs.
+    """
     description = str(job.get("description") or "")
     requirements = extract_requirements(description)
     offerings = extract_offerings(description)
     salary = extract_salary_usd(description + " " + offerings)
     posting_lang = detect_posting_language(description or str(job.get("title") or ""))
     required_langs = detect_required_languages(description)
+    contact_email = extract_contact_email(
+        " ".join(
+            [
+                description,
+                str(job.get("title") or ""),
+                str(job.get("company") or ""),
+                requirements,
+                offerings,
+            ]
+        )
+    )
 
-    enriched = {**job, "requirements": requirements}
+    enriched = {**job, "requirements": requirements, "contact_email": contact_email}
     match_percent, matched, missing = compute_match(profile, enriched)
-    advice = build_advice(matched, missing, job)
+    advice = build_advice(matched, missing, enriched)
 
     salary_label = ""
     if salary.get("min_usd") is not None:
@@ -412,6 +481,8 @@ def analyze_job_local(profile: dict[str, Any], job: dict[str, Any]) -> dict[str,
         "match_percent": match_percent,
         "advice": advice,
         "cover_letter": "",
+        "application_email": None,
+        "contact_email": contact_email,
         "salary_usd": salary_label,
         "salary_min_usd": salary.get("min_usd"),
         "salary_max_usd": salary.get("max_usd"),
