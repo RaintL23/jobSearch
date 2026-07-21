@@ -1,6 +1,17 @@
 # AI Job Scraper & Matcher
 
-Aplicación web que extrae el perfil de un CV (PDF) con Gemini, busca ofertas en Computrabajo, LinkedIn y otras fuentes LATAM, y muestra match, consejos y cover letter.
+Aplicación web local que arma un perfil desde un CV (PDF) con Gemini, busca ofertas en fuentes LATAM y remotas, calcula match sin gastar tokens, y genera cover letters / emails de postulación.
+
+---
+
+## Qué hace
+
+1. **Perfil** — Extrae skills, roles, ubicación e idiomas desde un PDF (o JSON manual).
+2. **Búsqueda** — Consulta Computrabajo, LinkedIn Jobs, LinkedIn #Hiring y APIs públicas (GetOnBoard, Remotive, RemoteOK, Jobicy).
+3. **Análisis local** — Filtra y puntúa ofertas (salario, modalidad, experiencia, país, idiomas, relevancia al query) sin llamar a Gemini.
+4. **IA opcional** — Cover letter, email de postulación y (si lo activás) un batch de match con Gemini para casos borderline.
+
+Todo corre en tu máquina. No se sube el CV a ningún servidor propio: solo a la API de Gemini cuando usás funciones de IA.
 
 ---
 
@@ -18,7 +29,7 @@ En free tier de Gemini, usá un modelo con cuota > 0 (p. ej. `gemini-3.1-flash-l
 
 ## Guía rápida: instalar y arrancar
 
-Elegí tu sistema. El resto del flujo de uso (sección siguiente) es igual en todos.
+Elegí tu sistema. El resto del flujo de uso es igual en todos.
 
 ### Windows
 
@@ -70,7 +81,7 @@ python -m backend.run
 Solo el API (sin abrir el navegador):
 
 ```bash
-uvicorn backend.main:app --host 127.0.0.1 --port 8000
+uvicorn backend.api.app:app --host 127.0.0.1 --port 8000
 ```
 
 Luego abrí [http://127.0.0.1:8000](http://127.0.0.1:8000).
@@ -89,7 +100,7 @@ Con el servidor corriendo y la UI abierta:
   2. Pegala en el modal **o** en `.env` como `GOOGLE_API_KEY=...` y reiniciá el servidor.
   - La clave del modal solo vive en memoria mientras el servidor esté activo.
 
-Sin API Key no podés procesar el CV ni generar cover letters.
+Sin API Key no podés procesar el CV ni generar cover letters / emails.
 
 ### Paso 1 — Perfil (opcional, pero recomendado)
 
@@ -124,7 +135,7 @@ El perfil se guarda en `localStorage`: si recargás la página no lo perdés ni 
 | Fuentes, fecha, experiencia, modalidad, idiomas | Chips / selects del panel. |
 
 3. Pulsá **Iniciar búsqueda** (abajo a la izquierda).
-4. En el panel central verás el progreso por fuente y, al terminar, la tabla de ofertas.
+4. En el panel central verás el progreso por fuente (stream SSE) y, al terminar, la tabla de ofertas.
 
 ### Paso 3 — Revisar resultados
 
@@ -136,12 +147,41 @@ En la tabla podés:
 - Marcar ★ (interesa) / ✕ (no interesa) / visitada — el estado se conserva al recargar.
 - Abrir la oferta original.
 - Pulsar **CL** para generar una cover letter con Gemini (hace falta perfil + API Key).
+- Generar un **email de postulación** desde el detalle de la oferta.
+
+---
+
+## Fuentes de ofertas
+
+| Fuente | Tipo | Notas |
+| --- | --- | --- |
+| Computrabajo | Playwright | Mejor con sesión iniciada. |
+| LinkedIn Jobs | Playwright | Requiere sesión para resultados útiles. |
+| LinkedIn #Hiring | Playwright | Posts con intención de hiring; requiere sesión. |
+| GetOnBoard | API pública | LATAM tech. |
+| Remotive | API pública | Remoto. |
+| RemoteOK | API pública | Remoto. |
+| Jobicy | API pública | Remoto. |
+
+Sin sesión, las APIs públicas siguen funcionando. LinkedIn y Computrabajo rinden mejor (o solo funcionan) con login.
+
+---
+
+## Pipeline técnico
+
+Todas las fuentes siguen el mismo flujo:
+
+| Paso | Dónde | Qué hace |
+| --- | --- | --- |
+| 1–2 | `backend/scraping/` | Búsqueda + extracción cruda (Playwright u HTTP). |
+| 3 | `backend/analysis/local.py` | Filtros locales, salario → USD, % de match, idiomas. |
+| 4 | `backend/api/app.py` | Orquesta resultados, progreso SSE y endpoints de IA. |
+
+El matching por defecto es **local** (sin tokens). Con `AI_MATCH_ENABLED=true` se puede enriquecer un subconjunto de ofertas borderline con Gemini.
 
 ---
 
 ## Sesiones LinkedIn / Computrabajo (opcional, una sola vez)
-
-Sin sesión, las fuentes públicas siguen funcionando. LinkedIn y Computrabajo rinden mejor (o solo funcionan) con login.
 
 **No se guarda tu contraseña.** Se abre Edge/Chrome con un perfil de JobSearch; te logueás una vez y las cookies quedan en `playwright/.auth/` (ignorado por git).
 
@@ -158,14 +198,14 @@ También podés iniciar sesión desde el panel de la propia UI (botón → en ca
 ### Opción manual
 
 ```bash
-python -m backend.login_session linkedin
-python -m backend.login_session computrabajo
+python -m backend.auth.login linkedin
+python -m backend.auth.login computrabajo
 ```
 
 Importar cookies del perfil diario del sistema (puede pedir reiniciar Edge/Chrome una vez):
 
 ```bash
-python -m backend.login_session linkedin --mode system --force-restart
+python -m backend.auth.login linkedin --mode system --force-restart
 ```
 
 ---
@@ -178,13 +218,13 @@ python -m backend.login_session linkedin --mode system --force-restart
 4. (Opcional) Login LinkedIn / Computrabajo y el panel muestra sesión OK.
 5. Iniciás una búsqueda y aparecen ofertas en la tabla.
 6. Marcás ★ / ✕ / visitada, recargás: el estado se mantiene.
-7. Generás una cover letter (**CL**) en una oferta.
+7. Generás una cover letter (**CL**) o email de postulación en una oferta.
 
 ---
 
 ## Configuración (`.env`)
 
-Toda la configuración vive en `backend/config.py` y se ajusta por variables de entorno o `.env` (ver `.env.example`).
+Toda la configuración vive en `backend/core/config.py` y se ajusta por variables de entorno o `.env` (ver `.env.example`).
 
 | Variable | Default | Descripción |
 | --- | --- | --- |
@@ -194,7 +234,7 @@ Toda la configuración vive en `backend/config.py` y se ajusta por variables de 
 | `DEFAULT_COUNTRY` | `mx` | País ISO2 si el perfil no lo indica (alias: `COMPUTRABAJO_COUNTRY`). |
 | `AI_REQUEST_TIMEOUT_SEC` | `60` | Timeout por llamada a Gemini. |
 | `AI_MAX_CV_CHARS` | `12000` | Máx. de caracteres del CV enviados al modelo. |
-| `AI_MATCH_ENABLED` | `false` | Análisis batch con Gemini para ofertas GetOnBoard con ubicación ambigua. |
+| `AI_MATCH_ENABLED` | `false` | Análisis batch con Gemini para ofertas borderline (ubicación ambigua). |
 | `SCRAPE_SAFETY_CAP` | `70` | Tope de ofertas por búsqueda. |
 | `PER_SOURCE_CAP` | `12` | Tope de ofertas por fuente de API. |
 | `HTTP_TIMEOUT_SEC` | `25` | Timeout de las APIs públicas. |
@@ -211,21 +251,53 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-La suite cubre lógica pura (fechas, matching, salario, idiomas), configuración, motor de IA (cliente Gemini simulado) y endpoints de la API (scraping/IA mockeados), sin consumir cuota ni red.
+La suite cubre lógica pura (fechas, matching, salario, idiomas, filtros), configuración tipada, motor de IA (cliente Gemini simulado), sesiones de auth y endpoints de la API (scraping/IA mockeados), sin consumir cuota ni red.
 
 ---
 
-## Estructura
+## Estructura del proyecto
 
 ```
-backend/     API FastAPI, motor Gemini, scraping y config
-frontend/    index.html + styles.css + app.js
-tests/       Suite pytest
+backend/
+  run.py              Launcher (uvicorn + abre la UI)
+  api/                FastAPI: CV, búsqueda SSE, cover letter, auth, API key
+  scraping/           Orquestador, filtros, browser Playwright
+    sources/          computrabajo, linkedin, linkedin_hiring, api (GetOnBoard…)
+  analysis/           Match y filtros locales (sin tokens)
+  ai/                 Cliente Gemini (perfil, relevancia, emails)
+  auth/               Login interactivo y sesiones de navegador
+  core/               Config, fechas, utils, query match, runtime key
+frontend/             index.html + styles.css + app.js
+tests/                Suite pytest
 start.bat / start.command    Arranque con setup automático
 login.bat / login.command    Login LinkedIn / Computrabajo
 ```
 
+### Entrypoints
+
+| Comando | Uso |
+| --- | --- |
+| `python -m backend.run` | Arranque diario (servidor + ventana UI). |
+| `uvicorn backend.api.app:app --host 127.0.0.1 --port 8000` | Solo API. |
+| `python -m backend.auth.login <site>` | Login LinkedIn / Computrabajo por CLI. |
+
 El frontend se sirve estático: `index.html` referencia `/static/styles.css` y `/static/app.js`.
+
+### API HTTP (resumen)
+
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `POST` | `/upload-cv` | Extrae perfil del PDF con Gemini. |
+| `POST` | `/search-jobs-stream` | Búsqueda con progreso SSE. |
+| `POST` | `/search-jobs` | Búsqueda síncrona. |
+| `POST` | `/generate-cover-letter` | Cover letter con Gemini. |
+| `POST` | `/generate-application-email` | Email de postulación. |
+| `GET` | `/auth/sessions` | Estado de sesiones guardadas. |
+| `POST` | `/auth/login/{site}` | Inicia captura de sesión. |
+| `DELETE` | `/auth/sessions/{site}` | Borra sesión de una fuente. |
+| `GET` | `/api/key-status` | Estado de la API key. |
+| `POST` | `/api/set-key` | API key en memoria (sesión). |
+| `GET` | `/health` | Healthcheck. |
 
 ---
 
