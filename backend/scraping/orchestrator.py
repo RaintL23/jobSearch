@@ -197,6 +197,8 @@ def search_jobs(
                                 bits.append(
                                     f"DOM={diag.get('js_roots') or diag.get('cards_seen')}"
                                 )
+                            if diag.get("voyager_posts"):
+                                bits.append(f"red={diag['voyager_posts']}")
                             if diag.get("skip_permalink"):
                                 bits.append(
                                     f"sin permalink={diag['skip_permalink']}"

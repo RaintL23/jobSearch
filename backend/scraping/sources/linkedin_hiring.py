@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote_plus, urlsplit
 
@@ -489,6 +491,201 @@ def _linkedin_hiring_extract_via_js(page: Page) -> tuple[list[dict[str, Any]], i
     return cleaned, roots
 
 
+# --- PASO 2 · EXTRACCIÓN PRIMARIA POR RED (Voyager / GraphQL) ----------------
+# LinkedIn pinta la búsqueda con JSON de su API interna. Interceptar esas
+# respuestas es más preciso que raspar el DOM: trae el texto COMPLETO (no el
+# "…more" truncado) y el urn del post, con lo que el permalink es fiable.
+_LINKEDIN_VOYAGER_URL_HINTS = (
+    "voyager/api/graphql",
+    "voyager/api/search",
+    "voyager/api/feed",
+    "voyager/api/voyagersearchdashclusters",
+    "voyager/api/voyagerfeeddashmainfeed",
+)
+
+
+def _attach_linkedin_voyager_capture(page: Page) -> list[Any]:
+    """
+    Engancha un listener de red y acumula los JSON internos de LinkedIn.
+
+    Devuelve una lista mutable que se rellena en segundo plano a medida que la
+    página dispara XHR (navegación + scroll). El caller la limpia por término.
+    """
+    captured: list[Any] = []
+
+    def _on_response(resp: Any) -> None:
+        try:
+            url = (resp.url or "").lower()
+        except Exception:  # noqa: BLE001
+            return
+        if "voyager/api" not in url:
+            return
+        if not any(h in url for h in _LINKEDIN_VOYAGER_URL_HINTS):
+            return
+        try:
+            if resp.status != 200:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            return
+        if isinstance(data, (dict, list)):
+            captured.append(data)
+
+    try:
+        page.on("response", _on_response)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("LinkedIn #Hiring: no se pudo enganchar la red: %s", exc)
+    return captured
+
+
+def _voyager_attr_text(node: Any, depth: int = 0) -> str:
+    """Resuelve las estructuras de texto de LinkedIn (AttributedText) a str plano."""
+    if depth > 6 or node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, dict):
+        for key in ("text", "attributedText", "commentaryText", "value"):
+            if key in node:
+                t = _voyager_attr_text(node[key], depth + 1)
+                if t:
+                    return t
+        return ""
+    if isinstance(node, list):
+        parts = [_voyager_attr_text(x, depth + 1) for x in node]
+        return " ".join(p for p in parts if p)
+    return ""
+
+
+def _voyager_actor_field(update: dict[str, Any], keys: tuple[str, ...]) -> str:
+    actor = update.get("actor")
+    if not isinstance(actor, dict):
+        return ""
+    for key in keys:
+        t = _voyager_attr_text(actor.get(key))
+        if t:
+            return " ".join(t.split())
+    return ""
+
+
+def _voyager_build_permalink(blob: str) -> str:
+    m = _ACTIVITY_RE.search(blob) or _ACTIVITY_LOOSE_RE.search(blob)
+    if m:
+        return (
+            "https://www.linkedin.com/feed/update/urn:li:activity:"
+            + m.group(1)
+            + "/"
+        )
+    m = _UGC_POST_RE.search(blob)
+    if m:
+        return (
+            "https://www.linkedin.com/feed/update/urn:li:ugcPost:"
+            + m.group(1)
+            + "/"
+        )
+    return ""
+
+
+def _voyager_permalink(update: dict[str, Any]) -> str:
+    """
+    Permalink del post. Prioriza el urn propio del update (updateMetadata /
+    entityUrn) para no confundirlo con posts reshareados anidados.
+    """
+    candidates: list[str] = []
+    meta = update.get("updateMetadata")
+    if isinstance(meta, dict):
+        for key in ("urn", "shareUrn", "backendUrn"):
+            val = meta.get(key)
+            if isinstance(val, str):
+                candidates.append(val)
+    for key in ("entityUrn", "dashEntityUrn", "preDashEntityUrn", "urn"):
+        val = update.get(key)
+        if isinstance(val, str):
+            candidates.append(val)
+    for cand in candidates:
+        link = _voyager_build_permalink(cand)
+        if link:
+            return link
+    # Último recurso: escanear el objeto entero (puede tomar un urn anidado).
+    try:
+        return _voyager_build_permalink(json.dumps(update, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _voyager_iter_updates(node: Any, depth: int = 0) -> Iterator[dict[str, Any]]:
+    """Recorre el JSON y devuelve cada objeto de post (los que traen commentary)."""
+    if depth > 8 or node is None:
+        return
+    if isinstance(node, dict):
+        if "commentary" in node:
+            yield node
+        for val in node.values():
+            yield from _voyager_iter_updates(val, depth + 1)
+    elif isinstance(node, list):
+        for val in node:
+            yield from _voyager_iter_updates(val, depth + 1)
+
+
+def _linkedin_hiring_extract_via_voyager(
+    payloads: list[Any],
+) -> list[dict[str, Any]]:
+    """
+    PASO 2 (primario) · convierte los JSON de red en posts estructurados.
+    Misma forma que `_linkedin_hiring_extract_via_js` para reutilizar el pipeline.
+    """
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for payload in payloads:
+        for update in _voyager_iter_updates(payload):
+            text = _voyager_attr_text(update.get("commentary")).strip()
+            if len(text) < 30:
+                continue
+            permalink = _voyager_permalink(update)
+            if not permalink or not is_linkedin_hiring_permalink(permalink):
+                continue
+            if permalink in seen:
+                continue
+            seen.add(permalink)
+            cleaned.append(
+                {
+                    "text": text[:4000],
+                    "company": _voyager_actor_field(update, ("name", "title"))[:150],
+                    "location": "",
+                    "permalink": permalink,
+                    "published": _voyager_actor_field(
+                        update, ("subDescription", "subtitle")
+                    )[:80],
+                }
+            )
+    return cleaned
+
+
+def _linkedin_hiring_merge_posts(
+    dom_posts: list[dict[str, Any]],
+    voyager_posts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Combina por permalink. La red gana (texto completo + urn fiable) pero
+    conserva company/location del DOM si la red no los trajo.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for post in dom_posts:
+        merged[post["permalink"]] = post
+    for post in voyager_posts:
+        existing = merged.get(post["permalink"])
+        if existing:
+            if not post.get("location") and existing.get("location"):
+                post["location"] = existing["location"]
+            if not post.get("company") and existing.get("company"):
+                post["company"] = existing["company"]
+        merged[post["permalink"]] = post
+    return list(merged.values())
+
+
 def _linkedin_hiring_query_ok(
     text: str,
     queries: list[str],
@@ -778,9 +975,13 @@ def scrape_linkedin_hiring(
     skipped_query = 0
     skipped_no_permalink = 0
     js_roots = 0
+    voyager_posts_seen = 0
 
     global _linkedin_hiring_last_diag
     _linkedin_hiring_last_diag = {}
+
+    # PASO 2 (primario): captura de red. Se engancha ya para no perder XHR.
+    captured_voyager = _attach_linkedin_voyager_capture(page)
 
     try:
         # Warm-up: entrar al feed con la sesión antes de buscar
@@ -849,19 +1050,29 @@ def scrape_linkedin_hiring(
                     continue
 
                 # --- PASO 2 · EXTRACCIÓN CRUDA ---
-                # Scroll + expandir "...more" para hidratar el DOM SDUI.
+                # Fuente primaria: JSON de red (Voyager). Se limpia por término
+                # para que los posts capturados correspondan a esta búsqueda.
+                captured_voyager.clear()
+                # Scroll + expandir "...more" hidrata el DOM y dispara los XHR.
                 _linkedin_hiring_collect_cards(page)
-                raw_posts, roots = _linkedin_hiring_extract_via_js(page)
+                voyager_posts = _linkedin_hiring_extract_via_voyager(captured_voyager)
+                voyager_posts_seen += len(voyager_posts)
+
+                # Fuente secundaria: lectura del DOM (SDUI) por si la red no llegó.
+                dom_posts, roots = _linkedin_hiring_extract_via_js(page)
                 js_roots = max(js_roots, roots)
+
+                raw_posts = _linkedin_hiring_merge_posts(dom_posts, voyager_posts)
                 cards_seen += len(raw_posts) if raw_posts else roots
                 logger.info(
-                    "LinkedIn #Hiring: js_posts=%d roots=%d para %r",
-                    len(raw_posts),
+                    "LinkedIn #Hiring: voyager=%d js_posts=%d roots=%d para %r",
+                    len(voyager_posts),
+                    len(dom_posts),
                     roots,
                     term,
                 )
 
-                # Fallback card-by-card si el evaluate no encontró permalinks.
+                # Fallback card-by-card si ni red ni evaluate dieron permalinks.
                 if not raw_posts:
                     cards = _linkedin_hiring_collect_cards(page)
                     cards_seen += len(cards)
@@ -986,6 +1197,7 @@ def scrape_linkedin_hiring(
     _linkedin_hiring_last_diag = {
         "cards_seen": cards_seen,
         "js_roots": js_roots,
+        "voyager_posts": voyager_posts_seen,
         "skip_intent": skipped_no_intent,
         "skip_open_to_work": skipped_open_to_work,
         "skip_query": skipped_query,
@@ -997,11 +1209,12 @@ def scrape_linkedin_hiring(
 
     if not jobs:
         logger.info(
-            "LinkedIn #Hiring vacío (cards=%s, roots=%s, skip_intent=%s, "
-            "skip_open_to_work=%s, skip_query=%s, skip_permalink=%s, "
-            "authwall=%s, url=%s, sesión=%s)",
+            "LinkedIn #Hiring vacío (cards=%s, roots=%s, voyager=%s, "
+            "skip_intent=%s, skip_open_to_work=%s, skip_query=%s, "
+            "skip_permalink=%s, authwall=%s, url=%s, sesión=%s)",
             cards_seen,
             js_roots,
+            voyager_posts_seen,
             skipped_no_intent,
             skipped_open_to_work,
             skipped_query,
