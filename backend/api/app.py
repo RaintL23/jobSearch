@@ -16,6 +16,7 @@ import json
 import logging
 import queue
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,8 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 _login_locks: dict[str, threading.Lock] = {s: threading.Lock() for s in AUTH_SITES}
 _pending_captures: dict[str, dict[str, Any]] = {}
 _pending_lock = threading.Lock()
+_search_runs: dict[str, threading.Event] = {}
+_search_runs_lock = threading.Lock()
 
 
 def _set_pending(site: str, **fields: Any) -> None:
@@ -144,6 +147,10 @@ class SearchFilters(BaseModel):
 class SearchRequest(BaseModel):
     profile: ProfilePayload = Field(default_factory=lambda: ProfilePayload(country=""))
     filters: SearchFilters = Field(default_factory=SearchFilters)
+
+
+class CancelSearchRequest(BaseModel):
+    run_id: str = Field(min_length=1, max_length=100)
 
 
 class CoverLetterRequest(BaseModel):
@@ -504,13 +511,20 @@ async def search_jobs_endpoint(payload: SearchRequest) -> dict[str, Any]:
 
 
 @app.post("/search-jobs-stream")
-async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
+async def search_jobs_stream(
+    payload: SearchRequest,
+    request: Request,
+) -> StreamingResponse:
     """
     Misma búsqueda que /search-jobs pero con eventos SSE de progreso por fuente.
     Formato: lines `data: {json}\\n\\n` (eventos progress | source_done | done | error).
     """
     profile_dict, filters_dict = _prepare_search(payload)
     q: queue.Queue[dict[str, Any] | None] = queue.Queue()
+    run_id = request.headers.get("x-search-run-id") or uuid.uuid4().hex
+    cancel_event = threading.Event()
+    with _search_runs_lock:
+        _search_runs[run_id] = cancel_event
 
     def on_progress(evt: dict[str, Any]) -> None:
         q.put(evt)
@@ -522,7 +536,11 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
                 None,
                 filters_dict,
                 on_progress=on_progress,
+                cancel_event=cancel_event,
             )
+            if cancel_event.is_set():
+                q.put({"event": "cancelled", "message": "Búsqueda cancelada."})
+                return
             raw_jobs = scrape_result.get("jobs") or []
             sources = scrape_result.get("sources") or {}
             on_progress(
@@ -538,6 +556,9 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
                 }
             )
             results, analyze_meta = _analyze_raw_jobs(profile_dict, filters_dict, raw_jobs)
+            if cancel_event.is_set():
+                q.put({"event": "cancelled", "message": "Búsqueda cancelada."})
+                return
             on_progress(
                 {
                     "event": "progress",
@@ -560,6 +581,8 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
             logger.exception("Error en /search-jobs-stream")
             q.put({"event": "error", "message": f"Error al scrapear ofertas: {exc}"})
         finally:
+            with _search_runs_lock:
+                _search_runs.pop(run_id, None)
             q.put(None)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -568,10 +591,14 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
         boot = {
             "event": "progress",
             "source": "all",
+            "run_id": run_id,
             "message": "Conectado. Fuentes: " + ", ".join(SOURCE_LABELS.values()),
         }
         yield f"data: {json.dumps(boot, ensure_ascii=False)}\n\n"
         while True:
+            if await request.is_disconnected():
+                cancel_event.set()
+                break
             item = await asyncio.to_thread(q.get)
             if item is None:
                 break
@@ -586,6 +613,17 @@ async def search_jobs_stream(payload: SearchRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/search-jobs/cancel")
+async def cancel_search(payload: CancelSearchRequest) -> dict[str, Any]:
+    """Solicita la cancelación cooperativa de una búsqueda en curso."""
+    with _search_runs_lock:
+        cancel_event = _search_runs.get(payload.run_id)
+    if cancel_event is None:
+        return {"cancelled": False, "message": "La búsqueda ya había terminado."}
+    cancel_event.set()
+    return {"cancelled": True, "message": "Cancelación solicitada."}
 
 
 @app.post("/generate-cover-letter")

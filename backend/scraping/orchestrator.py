@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
+from threading import Event
 from typing import Any
 
 from playwright.sync_api import sync_playwright
@@ -77,7 +78,10 @@ def _scrape_source_isolated(
     source: str,
     profile: dict[str, Any],
     filters: dict[str, Any],
+    cancel_event: Event | None = None,
 ) -> list[dict[str, Any]]:
+    if cancel_event and cancel_event.is_set():
+        return []
     if source in SOURCE_SCRAPERS:
         return SOURCE_SCRAPERS[source](profile, filters)
 
@@ -85,13 +89,30 @@ def _scrape_source_isolated(
     profile_guard = _DEDICATED_PROFILE_LOCK if dedicated_profile else nullcontext()
     with profile_guard:
         with sync_playwright() as p:
+            if cancel_event and cancel_event.is_set():
+                return []
             browser = _launch_browser_for_source(p, source, dedicated_profile)
             try:
                 if source == "computrabajo":
-                    return scrape_computrabajo(browser, profile, filters=filters)
+                    return scrape_computrabajo(
+                        browser,
+                        profile,
+                        filters=filters,
+                        cancel_event=cancel_event,
+                    )
                 if source == "linkedin_hiring":
-                    return scrape_linkedin_hiring(browser, profile, filters=filters)
-                return scrape_linkedin(browser, profile, filters=filters)
+                    return scrape_linkedin_hiring(
+                        browser,
+                        profile,
+                        filters=filters,
+                        cancel_event=cancel_event,
+                    )
+                return scrape_linkedin(
+                    browser,
+                    profile,
+                    filters=filters,
+                    cancel_event=cancel_event,
+                )
             finally:
                 browser.close()
 
@@ -110,6 +131,7 @@ def search_jobs(
     max_jobs: int | None = None,  # ignorado; se mantienen todas hasta SAFETY_CAP
     filters: dict[str, Any] | None = None,
     on_progress: ProgressCb | None = None,
+    cancel_event: Event | None = None,
 ) -> dict[str, Any]:
     """
     Orquestador multi-fuente (PASO 1–2 por fuente en paralelo).
@@ -143,12 +165,27 @@ def search_jobs(
         message=f"Iniciando búsqueda en {len(active_sources)} fuente(s)…",
     )
 
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(active_sources)))) as pool:
-        futures = {
-            pool.submit(_scrape_source_isolated, source, profile, filters): source
-            for source in active_sources
-        }
-        for fut in as_completed(futures):
+    pool = ThreadPoolExecutor(max_workers=min(4, max(1, len(active_sources))))
+    futures = {
+        pool.submit(
+            _scrape_source_isolated,
+            source,
+            profile,
+            filters,
+            cancel_event,
+        ): source
+        for source in active_sources
+    }
+    pending = set(futures)
+    try:
+        while pending:
+            if cancel_event and cancel_event.is_set():
+                break
+            try:
+                fut = next(as_completed(pending, timeout=0.25))
+            except TimeoutError:
+                continue
+            pending.remove(fut)
             source = futures[fut]
             label = SOURCE_LABELS.get(source, source)
             _emit(
@@ -279,6 +316,12 @@ def search_jobs(
                     count=0,
                     message=msg,
                 )
+    finally:
+        cancelled = bool(cancel_event and cancel_event.is_set())
+        if cancelled:
+            for fut in pending:
+                fut.cancel()
+        pool.shutdown(wait=not cancelled, cancel_futures=cancelled)
 
     # Orden de fusión: popularidad LATAM (LinkedIn primero)
     order = tuple(
@@ -290,6 +333,8 @@ def search_jobs(
     dropped_query = 0
     dropped_dup = 0
     for source in order:
+        if cancel_event and cancel_event.is_set():
+            break
         for job in by_source.get(source) or []:
             # Board-scoped ya pasó partition; otras fuentes: red de seguridad.
             if (

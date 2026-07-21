@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from threading import Event
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -314,6 +315,7 @@ def scrape_linkedin(
     browser: BrowserTarget,
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
+    cancel_event: Event | None = None,
 ) -> list[dict[str, Any]]:
     """
     LinkedIn Jobs — PASO 1 (búsqueda con f_TPR + sortBy=DD) y PASO 2 (cards).
@@ -348,15 +350,15 @@ def scrape_linkedin(
 
     try:
         for country in countries:
-            if len(jobs) >= SAFETY_CAP:
+            if len(jobs) >= SAFETY_CAP or (cancel_event and cancel_event.is_set()):
                 break
             meta = COUNTRY_META.get(country) if country else None
             locs = _linkedin_search_locations(locations, has_country=has_country)
             for keyword in queries:
-                if len(jobs) >= SAFETY_CAP:
+                if len(jobs) >= SAFETY_CAP or (cancel_event and cancel_event.is_set()):
                     break
                 for loc in locs:
-                    if len(jobs) >= SAFETY_CAP:
+                    if len(jobs) >= SAFETY_CAP or (cancel_event and cancel_event.is_set()):
                         break
                     # "" → geoId del país (toda Argentina, no solo AMBA).
                     # Texto → location= libre (ciudad / Remoto LATAM / etc.).
@@ -365,7 +367,9 @@ def scrape_linkedin(
                     display_location = location or (meta["name"] if meta else "")
 
                     for page_idx in range(LINKEDIN_MAX_PAGES):
-                        if len(jobs) >= SAFETY_CAP:
+                        if len(jobs) >= SAFETY_CAP or (
+                            cancel_event and cancel_event.is_set()
+                        ):
                             break
                         start = page_idx * LINKEDIN_PAGE_SIZE
                         url = (
@@ -409,6 +413,8 @@ def scrape_linkedin(
                             fresh_cards.append(job)
 
                         for job in fresh_cards:
+                            if cancel_event and cancel_event.is_set():
+                                break
                             # PASO 2b · entrar a la oferta para la descripción real.
                             if fetch_detail and job.get("url"):
                                 detail = _linkedin_job_detail(page, job["url"])

@@ -247,6 +247,13 @@ textarea.input { resize: vertical; min-height: 52px; font-family: var(--font-mon
 }
 .btn-primary:hover:not(:disabled) { background: #197A54; }
 .btn-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+.btn-cancel {
+  width: 100%; background: #8F2D35; border: 1px solid #B94751; color: #fff;
+  padding: 10px 14px; border-radius: 8px; font-weight: 600; font-size: 13px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn-cancel:hover:not(:disabled) { background: #A93640; }
+.btn-cancel:disabled { opacity: .45; cursor: not-allowed; }
 .footer-note { font-size: 10.5px; color: #5E6973; text-align: center; }
 .filters-toggle { font-weight: 600; }
 

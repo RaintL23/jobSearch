@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Iterator
+from threading import Event
 from typing import Any
 from urllib.parse import quote_plus, urlsplit
 
@@ -953,6 +954,7 @@ def scrape_linkedin_hiring(
     browser: BrowserTarget,
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
+    cancel_event: Event | None = None,
 ) -> list[dict[str, Any]]:
     """
     LinkedIn #Hiring — PASO 1 (content search + datePosted + sortBy Latest)
@@ -1009,7 +1011,9 @@ def scrape_linkedin_hiring(
         date_param = _linkedin_hiring_date_param(filters)
 
         for keyword in queries[:4]:
-            if len(jobs) >= LINKEDIN_HIRING_SOFT_CAP:
+            if len(jobs) >= LINKEDIN_HIRING_SOFT_CAP or (
+                cancel_event and cancel_event.is_set()
+            ):
                 break
             # Búsquedas de contenido (logueado). El feed de hashtag suele
             # redirigir; content search es más estable.
@@ -1020,7 +1024,9 @@ def scrape_linkedin_hiring(
                 f"buscamos {keyword}",
             ]
             for term in terms:
-                if len(jobs) >= LINKEDIN_HIRING_SOFT_CAP:
+                if len(jobs) >= LINKEDIN_HIRING_SOFT_CAP or (
+                    cancel_event and cancel_event.is_set()
+                ):
                     break
                 # Latest = date_posted (equivalente al botón «Latest» de LinkedIn)
                 sort_latest = quote_plus('["date_posted"]')

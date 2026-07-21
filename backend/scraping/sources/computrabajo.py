@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from threading import Event
 from typing import Any
 from urllib.parse import urljoin
 
@@ -31,6 +32,7 @@ def scrape_computrabajo(
     browser: BrowserTarget,
     profile: dict[str, Any],
     filters: dict[str, Any] | None = None,
+    cancel_event: Event | None = None,
 ) -> list[dict[str, Any]]:
     """
     Computrabajo — PASO 1 (URL de búsqueda) + PASO 2 (listado y detalle opcional).
@@ -47,11 +49,11 @@ def scrape_computrabajo(
     try:
         # --- PASO 1 · BÚSQUEDA (Computrabajo: slug por keyword/país) ---
         for country in countries:
-            if len(jobs) >= SAFETY_CAP:
+            if len(jobs) >= SAFETY_CAP or (cancel_event and cancel_event.is_set()):
                 break
             base = f"https://{COUNTRY_META[country]['ct']}.computrabajo.com"
             for keyword in queries:
-                if len(jobs) >= SAFETY_CAP:
+                if len(jobs) >= SAFETY_CAP or (cancel_event and cancel_event.is_set()):
                     break
                 kw = _enrich_keyword(keyword, filters)
                 search_url = f"{base}/trabajo-de-{slugify(kw)}"
@@ -85,7 +87,7 @@ def scrape_computrabajo(
                     continue
 
                 for card in cards:
-                    if len(jobs) >= SAFETY_CAP:
+                    if len(jobs) >= SAFETY_CAP or (cancel_event and cancel_event.is_set()):
                         break
                     url = card.get("url") or ""
                     if not url or url in seen:

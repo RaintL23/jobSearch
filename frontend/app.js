@@ -18,6 +18,7 @@ const step1Num = document.getElementById("step1Num");
 const profileJson = document.getElementById("profileJson");
 const profileStatus = document.getElementById("profileStatus");
 const btnSearch = document.getElementById("btnSearch");
+const btnCancelSearch = document.getElementById("btnCancelSearch");
 const btnProcess = document.getElementById("btnProcess");
 const resultsBody = document.getElementById("resultsBody");
 const resultsWrap = document.getElementById("resultsWrap");
@@ -41,6 +42,9 @@ let tableFilter = "all";
 let tableQuery = "";
 let tableSort = "match";
 let tableStatusFilter = "all";
+let activeSearchController = null;
+let activeSearchRunId = null;
+let activeSearchCancelled = false;
 
 const PROFILE_STORAGE_KEY = "jobsearch_profile_v1";
 const ROW_STATES_KEY = "jobsearch_row_states_v1";
@@ -1094,6 +1098,25 @@ document.getElementById("btnDownload").addEventListener("click", () => {
   }
 });
 
+btnCancelSearch.addEventListener("click", () => {
+  if (!activeSearchController || !activeSearchRunId) return;
+  activeSearchCancelled = true;
+  btnCancelSearch.disabled = true;
+  appendSearchProgress("Cancelando búsqueda…", { tone: "warn" });
+  setStatus({
+    summary: "<strong>Cancelando…</strong>",
+    detail: "Deteniendo las fuentes activas",
+    tone: "warn",
+    expandLog: true,
+  });
+  fetch(`${API_BASE}/search-jobs/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ run_id: activeSearchRunId }),
+  }).catch(() => {});
+  activeSearchController.abort();
+});
+
 btnSearch.addEventListener("click", async () => {
   show(document.getElementById("step2Error"), "");
   show(document.getElementById("step2Ok"), "");
@@ -1132,6 +1155,13 @@ btnSearch.addEventListener("click", async () => {
   }
 
   setLoading(btnSearch, document.getElementById("searchLabel"), document.getElementById("searchSpinner"), true, "Iniciar búsqueda", "Buscando…");
+  activeSearchController = new AbortController();
+  activeSearchRunId =
+    globalThis.crypto?.randomUUID?.() ||
+    `search-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  activeSearchCancelled = false;
+  btnCancelSearch.disabled = false;
+  btnCancelSearch.classList.remove("hidden");
   btnProcess.disabled = true;
   // Pedir permiso de notificaciones Windows (toast + brillo en la barra).
   ensureNotificationPermission();
@@ -1148,8 +1178,13 @@ btnSearch.addEventListener("click", async () => {
   try {
     const res = await fetch(`${API_BASE}/search-jobs-stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "X-Search-Run-Id": activeSearchRunId,
+      },
       body: JSON.stringify({ profile, filters }),
+      signal: activeSearchController.signal,
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -1179,6 +1214,9 @@ btnSearch.addEventListener("click", async () => {
         }
       } else if (type === "error") {
         throw new Error(evt.message || "Error en la búsqueda");
+      } else if (type === "cancelled") {
+        activeSearchCancelled = true;
+        throw new Error(evt.message || "Búsqueda cancelada.");
       } else if (type === "done") {
         finished = true;
         const meta = evt.analyze_meta || {};
@@ -1201,22 +1239,41 @@ btnSearch.addEventListener("click", async () => {
     }
   } catch (err) {
     finishedOk = false;
-    finishedError = err.message || String(err);
-    show(document.getElementById("step2Error"), finishedError);
-    setStatus({
-      summary: `<strong>Error</strong> en la búsqueda`,
-      detail: escapeHtml(finishedError),
-      tone: "warn",
-      expandLog: true,
-    });
+    if (activeSearchCancelled || err?.name === "AbortError") {
+      finishedError = "";
+      appendSearchProgress("Búsqueda cancelada.", { tone: "warn" });
+      show(document.getElementById("step2Empty"), "Búsqueda cancelada.");
+      setStatus({
+        summary: "<strong>Búsqueda cancelada</strong>",
+        detail: "Podés iniciar una nueva búsqueda",
+        tone: "warn",
+        expandLog: true,
+      });
+    } else {
+      finishedError = err.message || String(err);
+      show(document.getElementById("step2Error"), finishedError);
+      setStatus({
+        summary: `<strong>Error</strong> en la búsqueda`,
+        detail: escapeHtml(finishedError),
+        tone: "warn",
+        expandLog: true,
+      });
+    }
   } finally {
     setLoading(btnSearch, document.getElementById("searchLabel"), document.getElementById("searchSpinner"), false, "Iniciar búsqueda", "Buscando…");
+    btnCancelSearch.classList.add("hidden");
+    btnCancelSearch.disabled = false;
+    activeSearchController = null;
+    activeSearchRunId = null;
     btnProcess.disabled = false;
-    notifySearchFinished({
-      ok: finishedOk,
-      count: finishedCount,
-      error: finishedError,
-    });
+    if (!activeSearchCancelled) {
+      notifySearchFinished({
+        ok: finishedOk,
+        count: finishedCount,
+        error: finishedError,
+      });
+    }
+    activeSearchCancelled = false;
   }
 });
 
