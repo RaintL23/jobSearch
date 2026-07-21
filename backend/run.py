@@ -162,7 +162,7 @@ def main() -> int:
         sys.executable,
         "-m",
         "uvicorn",
-        "backend.main:app",
+        "backend.api.app:app",
         "--host",
         HOST,
         "--port",

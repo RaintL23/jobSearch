@@ -1,11 +1,11 @@
-"""Tests de endpoints de backend.main con TestClient (scraping / IA mockeados)."""
+"""Tests de endpoints de backend.api.app con TestClient (scraping / IA mockeados)."""
 
 from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import main
+from backend.api import app as main
 
 
 @pytest.fixture()
@@ -74,6 +74,38 @@ def test_generate_cover_letter(monkeypatch, client):
     )
     assert r.status_code == 200
     assert r.json()["cover_letter"] == "Carta de prueba"
+
+
+def test_generate_application_email(monkeypatch, client):
+    monkeypatch.setattr(
+        main,
+        "generate_application_email",
+        lambda p, j: {
+            "to": "hr@acme.dev",
+            "subject": "Postulación Dev — Ada",
+            "body": "Hola, adjunto mi CV.",
+            "cv_reminder": "Recordá adjuntar tu CV.",
+        },
+    )
+    r = client.post(
+        "/generate-application-email",
+        json={
+            "profile": {"name": "Ada"},
+            "job": {"title": "Dev", "contact_email": "hr@acme.dev"},
+        },
+    )
+    assert r.status_code == 200
+    draft = r.json()["application_email"]
+    assert draft["subject"].startswith("Postulación")
+    assert "CV" in draft["cv_reminder"]
+
+
+def test_generate_application_email_requires_contact(client):
+    r = client.post(
+        "/generate-application-email",
+        json={"profile": {"name": "Ada"}, "job": {"title": "Dev"}},
+    )
+    assert r.status_code == 400
 
 
 def test_auth_sessions_status(client):

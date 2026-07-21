@@ -1,5 +1,12 @@
 """
-API FastAPI: CV, búsqueda (análisis local) y cover letter bajo demanda.
+API FastAPI: CV, búsqueda (análisis local) y cover letter / email bajo demanda.
+
+=============================================================================
+PIPELINE (mismas etapas en todas las fuentes)
+  PASO 1–2 · scraping.search_jobs / scraping.sources.api  → ofertas crudas
+  PASO 3   · analysis.local.analyze_job_local    → ubicación, salario, skills, email
+  PASO 4   · _analyze_raw_jobs                 → filtros + match; email IA on-demand
+=============================================================================
 """
 
 from __future__ import annotations
@@ -18,13 +25,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.ai_engine import (
+from backend.ai.engine import (
     AIEngineError,
     batch_analyze_relevance,
     extract_profile_from_cv,
+    generate_application_email,
     generate_cover_letter,
 )
-from backend.auth_sessions import (
+from backend.auth.sessions import (
     AUTH_SITES,
     BrowserRestartRequired,
     cdp_status,
@@ -32,29 +40,29 @@ from backend.auth_sessions import (
     interactive_login,
     session_status,
 )
-from backend.config import get_settings
-from backend.runtime_key import has_runtime_key, set_runtime_key
-from backend.job_analyzer import (
+from backend.core.config import get_settings
+from backend.core.runtime_key import has_runtime_key, set_runtime_key
+from backend.analysis.local import (
     analyze_job_local,
     linkedin_hiring_location_ok,
     passes_gob_country_filter,
     passes_language_filters,
     salary_in_range,
 )
-from backend.date_utils import hours_since_published
-from backend.query_match import extract_location
-from backend.scraper import (
+from backend.core.dates import hours_since_published
+from backend.core.query_match import extract_location
+from backend.scraping import (
     SOURCE_LABELS,
     SOURCE_LATAM_RANK,
     is_linkedin_hiring_permalink,
     search_jobs,
 )
-from backend.utils import PDFExtractionError, extract_text_from_pdf
+from backend.core.utils import PDFExtractionError, extract_text_from_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = ROOT_DIR / "frontend"
 
 _login_locks: dict[str, threading.Lock] = {s: threading.Lock() for s in AUTH_SITES}
@@ -143,6 +151,13 @@ class CoverLetterRequest(BaseModel):
     job: dict[str, Any]
 
 
+class ApplicationEmailRequest(BaseModel):
+    """PASO 4 · borrador de email cuando la oferta trae contact_email."""
+
+    profile: ProfilePayload
+    job: dict[str, Any]
+
+
 @app.get("/")
 async def serve_index() -> FileResponse:
     index_path = FRONTEND_DIR / "index.html"
@@ -200,6 +215,13 @@ def _analyze_raw_jobs(
     filters_dict: dict[str, Any],
     raw_jobs: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    PASO 3–4 unificado (todas las fuentes).
+
+    PASO 3: analyze_job_local (ubicación, salario, skills, contact_email).
+    PASO 4: filtros país/ubicación/idioma/salario + match; IA solo si hace falta
+    (ubicación ambigua) o bajo demanda (email / cover letter).
+    """
     filter_countries: list[str] = list(filters_dict.get("countries") or [])
     profile_country: str = str(profile_dict.get("country") or "")
     filter_locations: list[str] = list(filters_dict.get("locations") or [])
@@ -238,7 +260,7 @@ def _analyze_raw_jobs(
     hiring_user_country = (filter_countries[0] if filter_countries else profile_country) or ""
 
     for job in raw_jobs:
-        # --- Filtro de país para GetOnBoard (datos estructurados de la API) ---
+        # --- PASO 4 · filtro país (GetOnBoard, datos estructurados) ---
         if job.get("source") == "getonboard":
             if not passes_gob_country_filter(job, filter_countries, profile_country):
                 logger.debug(
@@ -250,7 +272,7 @@ def _analyze_raw_jobs(
                 _note_discard(job, "country")
                 continue
 
-        # --- Validación de ubicación para posts LinkedIn #Hiring ---
+        # --- PASO 4 · filtro ubicación (LinkedIn #Hiring) ---
         needs_ai_location = False
         if job.get("source") == "linkedin_hiring":
             if not is_linkedin_hiring_permalink(str(job.get("url") or "")):
@@ -271,6 +293,7 @@ def _analyze_raw_jobs(
                 continue
             needs_ai_location = verdict is None
 
+        # --- PASO 3 · revisar descripción (skills, salario, email, …) ---
         analyzed = analyze_job_local(profile_dict, job)
         if needs_ai_location:
             analyzed["_needs_ai_location"] = True
@@ -280,6 +303,7 @@ def _analyze_raw_jobs(
             analyzed["missing_skills"] = []
             analyzed["advice"] = "Cargá un perfil CV para calcular el match y recibir recomendaciones."
 
+        # --- PASO 4 · clasificación: idioma + salario + skills (match ya calculado) ---
         if not passes_language_filters(analyzed, posting_langs, required_langs):
             _note_discard(job, "language")
             continue
@@ -308,7 +332,7 @@ def _analyze_raw_jobs(
         analyzed["_countries_raw"] = job.get("_countries_raw") or []
         results.append(analyzed)
 
-    # --- Análisis IA en batch para casos ambiguos (GOB + #Hiring) (best-effort) ---
+    # --- PASO 4 · IA batch solo para ubicación ambigua (GOB + #Hiring) ---
     if match_available:
         dropped = _apply_ai_batch(profile_dict, filter_countries, profile_country, results)
         for job in dropped:
@@ -577,6 +601,30 @@ async def cover_letter_endpoint(payload: CoverLetterRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {"cover_letter": letter}
+
+
+@app.post("/generate-application-email")
+async def application_email_endpoint(payload: ApplicationEmailRequest) -> dict[str, Any]:
+    """
+    PASO 4 · genera asunto + cuerpo para postular por email (si hay contact_email).
+    Incluye recordatorio de adjuntar el CV. Bajo demanda (no en el scrape).
+    """
+    job = dict(payload.job or {})
+    if not str(job.get("contact_email") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Esta oferta no tiene email de contacto detectado.",
+        )
+    try:
+        draft = await asyncio.to_thread(
+            generate_application_email,
+            payload.profile.model_dump(),
+            job,
+        )
+    except AIEngineError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"application_email": draft}
 
 
 @app.get("/auth/sessions")
