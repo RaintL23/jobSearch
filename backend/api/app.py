@@ -67,6 +67,9 @@ logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = ROOT_DIR / "frontend"
 
+# Tope de tamaño para el CV subido (evita agotar memoria con archivos enormes).
+MAX_CV_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
 _login_locks: dict[str, threading.Lock] = {s: threading.Lock() for s in AUTH_SITES}
 _pending_captures: dict[str, dict[str, Any]] = {}
 _pending_lock = threading.Lock()
@@ -97,11 +100,20 @@ app = FastAPI(
     version="1.3.0",
 )
 
+# La UI se sirve desde el mismo origen que la API (127.0.0.1:8000), así que el
+# flujo normal no necesita CORS. Restringimos a los orígenes locales conocidos
+# para que ninguna página web externa pueda invocar endpoints con efectos
+# secundarios (login de navegador, set-key, scraping con tu sesión de LinkedIn).
+# Nunca usar "*" aquí: habilitaría CSRF / DNS-rebinding contra la app local.
+ALLOWED_ORIGINS = [
+    f"http://{host}:{port}"
+    for host in ("127.0.0.1", "localhost")
+    for port in ("8000", "8080")
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    # El wildcard con credenciales es inválido según la spec CORS y la app no
-    # usa cookies entre orígenes; se desactivan para una config correcta.
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -180,7 +192,20 @@ async def upload_cv(file: UploadFile = File(...)) -> dict[str, Any]:
     if not filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Solo se aceptan archivos PDF.")
 
-    content = await file.read()
+    # Rechazo temprano por Content-Length si el cliente lo informa.
+    if file.size is not None and file.size > MAX_CV_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El PDF supera el máximo de {MAX_CV_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
+
+    # Lectura acotada: si excede el tope, cortamos sin cargar todo en memoria.
+    content = await file.read(MAX_CV_UPLOAD_BYTES + 1)
+    if len(content) > MAX_CV_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"El PDF supera el máximo de {MAX_CV_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
     if not content:
         raise HTTPException(status_code=400, detail="El archivo está vacío.")
 

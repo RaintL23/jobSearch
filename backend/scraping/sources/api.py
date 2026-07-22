@@ -13,9 +13,11 @@ PASO 3–4 · revisión / clasificación / email → analysis.local + api.app
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import logging
 import re
+import socket
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -166,9 +168,61 @@ def _http_json(url: str, *, timeout: float | None = None) -> Any:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
+def _host_is_public(host: str) -> bool:
+    """
+    True solo si `host` resuelve a direcciones públicas.
+
+    Defensa SSRF: las URLs a canonicalizar provienen de una API externa
+    (GetOnBoard); un redirect hacia loopback/red interna (127.0.0.1,
+    169.254.169.254, 10.x, …) podría sondear servicios locales.
+    """
+    host = (host or "").strip().strip("[]")
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        ip_str = info[4][0].split("%", 1)[0]  # descarta zona IPv6 (fe80::1%eth0)
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
+class _PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """No sigue redirects hacia hosts no públicos (defensa SSRF)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        parts = urllib.parse.urlsplit(newurl)
+        if parts.scheme not in ("http", "https") or not _host_is_public(parts.hostname or ""):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_OPENER = urllib.request.build_opener(_PublicOnlyRedirectHandler())
+
+
 def _resolve_final_url(url: str, *, timeout: float = 15.0) -> str:
     """Sigue redirects (p. ej. GetOnBoard agrega /programming/ en la URL canónica)."""
     if not url:
+        return url
+    parts = urllib.parse.urlsplit(url)
+    # Solo canonicalizamos URLs http(s) hacia hosts públicos (evita SSRF local).
+    if parts.scheme not in ("http", "https") or not _host_is_public(parts.hostname or ""):
         return url
     req = urllib.request.Request(
         url,
@@ -176,7 +230,7 @@ def _resolve_final_url(url: str, *, timeout: float = 15.0) -> str:
         method="HEAD",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _SAFE_OPENER.open(req, timeout=timeout) as resp:
             return str(resp.geturl() or url)
     except Exception:  # noqa: BLE001
         try:
@@ -184,7 +238,7 @@ def _resolve_final_url(url: str, *, timeout: float = 15.0) -> str:
                 url,
                 headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"},
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _SAFE_OPENER.open(req, timeout=timeout) as resp:
                 # Leer poco para completar redirects
                 resp.read(256)
                 return str(resp.geturl() or url)

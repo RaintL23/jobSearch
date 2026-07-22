@@ -32,6 +32,15 @@ def test_upload_cv_rejects_empty(client):
     assert r.status_code == 400
 
 
+def test_upload_cv_rejects_oversize(client):
+    oversized = b"%PDF-1.4\n" + b"0" * (main.MAX_CV_UPLOAD_BYTES + 1)
+    r = client.post(
+        "/upload-cv", files={"file": ("cv.pdf", oversized, "application/pdf")}
+    )
+    assert r.status_code == 413
+    assert "MB" in r.json()["detail"]
+
+
 def test_search_requires_query_or_profile(client):
     r = client.post("/search-jobs", json={"profile": {}, "filters": {}})
     assert r.status_code == 400
