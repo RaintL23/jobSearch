@@ -91,12 +91,15 @@ def parse_relative_published(text: str, *, now: datetime | None = None) -> str |
     patterns: list[tuple[str, str]] = [
         (r"(?:hace\s+)?(\d+)\s*min(?:uto)?s?", "minutes"),
         (r"(\d+)\s*minutes?\s*ago", "minutes"),
-        (r"(?:hace\s+)?(\d+)\s*h(?:ora)?s?", "hours"),
+        (r"(?:hace\s+)?(\d+)\s*m(?:in)?(?![a-z])", "minutes"),  # 15m
+        (r"(?:hace\s+)?(\d+)\s*h(?:ora|r|rs)?s?(?![a-z])", "hours"),  # 7h / 7hr
         (r"(\d+)\s*hours?\s*ago", "hours"),
-        (r"(?:hace\s+)?(\d+)\s*d(?:[ií]a)?s?", "days"),
+        (r"(?:hace\s+)?(\d+)\s*d(?:[ií]a)?s?(?![a-z])", "days"),  # 2d
         (r"(\d+)\s*days?\s*ago", "days"),
+        (r"(?:hace\s+)?(\d+)\s*w(?:k|eek)?s?(?![a-z])", "weeks"),  # 3w
         (r"(?:hace\s+)?(\d+)\s*sem(?:ana)?s?", "weeks"),
         (r"(\d+)\s*weeks?\s*ago", "weeks"),
+        (r"(?:hace\s+)?(\d+)\s*mo(?:nth)?s?(?![a-z])", "months"),
         (r"(?:hace\s+)?(\d+)\s*mes(?:es)?", "months"),
         (r"(\d+)\s*months?\s*ago", "months"),
     ]

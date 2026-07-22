@@ -45,11 +45,8 @@ LINKEDIN_HIRING_TEXT_SELECTORS = (
     ".break-words",
 )
 
-# Señales de EMPLEADOR contratando (no candidatos “open to work”).
-# Incluye frases típicas de recruiters LATAM aunque el “…more” aún no
-# expandió el #Hiring del final (ej. post de María Fernanda Spirito).
+# Señales FUERTES de EMPLEADOR contratando (no basta el hashtag #Hiring solo).
 LINKEDIN_HIRING_HINTS = (
-    "#hiring",
     "we're hiring",
     "we are hiring",
     "we’re hiring",  # apostrofe tipográfico
@@ -82,30 +79,56 @@ LINKEDIN_HIRING_HINTS = (
     "sumate",
     "sumáte",
     "incorporamos",
-    # "hiring" suelto: cubre "#hiring" y frases sin we're
-    " hiring ",
     "hiring a ",
     "hiring an ",
     "hiring –",
     "hiring -",
+    "we are looking to hire",
+    "looking to hire",
 )
 
-# Candidatos buscando trabajo (aparecen en la misma búsqueda de content).
-# Frases fuertes de candidato; NO usar solo "#opentowork" (recruiters lo
-# ponen de hashtag en ofertas reales).
+# Candidatos buscando trabajo (misma búsqueda #Hiring).
+# Si hay señal fuerte de candidato y NO hay señal fuerte de empleador → descartar,
+# aunque el post tenga #Hiring.
 LINKEDIN_OPEN_TO_WORK_HINTS = (
     "is open to work",
     "open to work\n",
+    "#opentowork",
     " currently open to new opportunities",
     "looking for new opportunities as ",
     "looking for new opportunities as a",
+    "looking for new opportunities",
+    "actively looking for new opportunities",
+    "i'm actively looking",
+    "i am actively looking",
+    "i'm looking for new",
+    "i am looking for new",
+    "i'm looking for a ",
+    "i am looking for a ",
+    "i'm looking for an ",
+    "seeking new opportunities",
+    "seeking opportunities as",
+    "available for new opportunities",
+    "available for opportunities",
     "view job preferences",
     "i'm currently open",
     "i am currently open",
+    "open to work as",
+    "hire me",
+    "please hire me",
     "estoy en búsqueda activa",
+    "estoy en busqueda activa",
     "estoy buscando trabajo",
+    "estoy buscando empleo",
     "busco empleo",
+    "busco trabajo",
     "busco oportunidades como",
+    "busco oportunidades",
+    "me encuentro en búsqueda",
+    "me encuentro en busqueda",
+    "en búsqueda de nuevas oportunidades",
+    "en busqueda de nuevas oportunidades",
+    "disponible para nuevas oportunidades",
 )
 
 LINKEDIN_HIRING_SOFT_CAP = 25
@@ -280,15 +303,40 @@ _LINKEDIN_HIRING_EXTRACT_JS = r"""
       ? locEl.innerText.replace(/\s+/g, " ").trim().slice(0, 120)
       : "";
 
-    const timeEl = root.querySelector("time, span.feed-shared-actor__sub-description, " +
-      'a[href*="activity"] span, a[href*="/posts/"] span');
-    let published = "";
-    if (timeEl) {
-      published =
-        (timeEl.getAttribute && timeEl.getAttribute("datetime")) ||
-        timeEl.innerText ||
-        "";
+    // Fecha relativa tipo "7h" / "2d" / "3w" junto al actor (no el título del perfil).
+    function findPublished(el) {
+      const time = el.querySelector("time");
+      if (time) {
+        const dt = time.getAttribute("datetime");
+        if (dt) return dt;
+        const t = (time.innerText || "").replace(/\s+/g, " ").trim();
+        if (t) return t;
+      }
+      // Stamps cortos típicos del feed: 7h, 2d, 15m, 3w, 1mo
+      const STAMP = /^(?:\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|mo|y)|just now|ahora|ayer|yesterday)$/i;
+      const STAMP_PREFIX = /^(\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|mo|y))\b/i;
+      const nodes = el.querySelectorAll(
+        "span, a, time, div.update-components-actor__sub-description, " +
+        "span.feed-shared-actor__sub-description, " +
+        'a[href*="activity"] span, a[href*="/posts/"] span'
+      );
+      for (const node of nodes) {
+        let t = (node.innerText || node.textContent || "")
+          .replace(/[•·|]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!t || t.length > 24) continue;
+        // Evitar el headline del recruiter ("Talent Acquisition | …").
+        if (/talent|recruiter|developer|engineer|hiring manager/i.test(t) && !STAMP.test(t)) {
+          continue;
+        }
+        if (STAMP.test(t)) return t;
+        const m = t.match(STAMP_PREFIX);
+        if (m) return m[1].replace(/\s+/g, "");
+      }
+      return "";
     }
+    const published = findPublished(root);
 
     out.push({
       text: text.slice(0, 4000),
@@ -640,37 +688,95 @@ def _linkedin_hiring_expand_all(page: Page, *, rounds: int = 3) -> int:
     return total
 
 
+def _linkedin_hiring_parse_published(raw: str) -> str | None:
+    """Normaliza '7h', '2d', datetime ISO, etc. a published_at."""
+    text = " ".join(str(raw or "").replace("•", " ").split()).strip()
+    if not text:
+        return None
+    # Preferir un stamp corto si el blob trae basura alrededor.
+    m = re.search(
+        r"\b(\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|mo|y|hora|horas|dia|días|dias|sem(?:ana)?s?))\b",
+        text,
+        flags=re.I,
+    )
+    probe = m.group(1) if m else text
+    return parse_published_at(probe) or parse_relative_published(probe) or (
+        parse_published_at(text) or parse_relative_published(text)
+    )
+
+
+def _linkedin_hiring_location_from_text(text: str) -> str:
+    """Best-effort: saca ubicación explícita del cuerpo del post."""
+    blob = text or ""
+    patterns = (
+        r"(?i)\blocation\s*[:\-]\s*([^\n|;]{2,60})",
+        r"(?i)ubicaci[oó]n\s*[:\-]\s*([^\n|;]{2,60})",
+        r"(?i)\b(?:based in|located in|en)\s+"
+        r"(m[eé]xico|mexico|argentina|colombia|chile|per[uú]|brasil|brazil|"
+        r"uruguay|ecuador|latam|latin america|latinoam[eé]rica|"
+        r"remoto|remote|worldwide)([^\n|;]{0,40})",
+        r"(?i)\b(cdmx|ciudad de m[eé]xico|buenos aires|caba|bogot[aá]|"
+        r"santiago|lima|remoto latam|remote latam)\b",
+    )
+    for pat in patterns:
+        m = re.search(pat, blob)
+        if not m:
+            continue
+        if m.lastindex and m.lastindex >= 1:
+            bit = " ".join(g for g in m.groups() if g).strip(" .,-")
+        else:
+            bit = m.group(0).strip(" .,-")
+        bit = " ".join(bit.split()).strip(" .,-!|")
+        if 2 <= len(bit) <= 80:
+            return bit[:120]
+    # Señal corta al final del título: "... México! MX"
+    m = re.search(
+        r"(?i)\b(m[eé]xico|argentina|colombia|chile|per[uú]|brasil|latam)\b"
+        r"(?:\s*[!|]?\s*mx|\s*ar|\s*co)?\s*$",
+        blob.split("\n", 1)[0],
+    )
+    if m:
+        return " ".join(m.group(0).replace("!", " ").split()).strip(" .,-|")[:120]
+    return ""
+
+
 def _linkedin_hiring_intent(text: str, *, permalink: str = "") -> bool:
     """
     True si el post parece oferta de empleador (no candidato open-to-work).
 
-    Importante: en search/results/content el texto suele venir TRUNCADO
-    (…more). Posts como el de María Fernanda Spirito muestran solo
-    «NUEVA OPORTUNIDAD | .NET API DEVELOPER» sin el #Hiring del final;
-    por eso también miramos el slug del permalink (_hiring-…-share-ID).
+    Regla clave: el hashtag #Hiring solo NO alcanza. Muchos candidatos lo usan
+    («I'm actively looking for new opportunities… #Hiring»). Hace falta una
+    señal fuerte de empleador (we're hiring / buscamos / vacante / …).
     """
     low = f" {(text or '').lower()} "
+    slug = (permalink or "").lower()
 
-    def _has_employer_signal(blob: str) -> bool:
+    def _strong_employer(blob: str) -> bool:
         if any(k in blob for k in LINKEDIN_HIRING_HINTS if k != "view job"):
             return True
-        # "View job" (oferta) ≠ "View job preferences" (candidato).
         return "view job" in blob and "view job preferences" not in blob
 
-    if any(h in low for h in LINKEDIN_OPEN_TO_WORK_HINTS):
-        # Recruiters a veces agregan #OpenToWork; no descartar si hay oferta clara.
-        if not _has_employer_signal(low):
-            slug = (permalink or "").lower()
-            if not ("hiring" in slug or "contrat" in slug or "vacante" in slug):
-                return False
-    if _has_employer_signal(low):
+    def _is_seeker(blob: str) -> bool:
+        return any(h in blob for h in LINKEDIN_OPEN_TO_WORK_HINTS)
+
+    seeker = _is_seeker(low)
+    employer = _strong_employer(low)
+
+    # Candidato claro sin oferta real → afuera, aunque tenga #Hiring.
+    if seeker and not employer:
+        return False
+
+    if employer:
         return True
-    # Permalink canónico de LinkedIn suele incluir hashtags del post:
-    # /posts/user_hiring-dotnet-…-share-7485…-atO7/
-    # Ejemplo real: spiritomariafernanda_hiring-dotnetdeveloper-…-7485421228564905985-atO7
-    slug = (permalink or "").lower()
-    if "hiring" in slug or "contrat" in slug or "vacante" in slug:
+
+    # Permalink canónico a veces incluye hashtags del post (_hiring-…).
+    # Solo aceptarlo si NO parece candidato.
+    if not seeker and (
+        "hiring" in slug or "contrat" in slug or "vacante" in slug
+    ):
         return True
+
+    # Solo #Hiring / token débil sin más contexto → insuficiente.
     return False
 
 
@@ -1818,14 +1924,17 @@ def scrape_linkedin_hiring(
                             and any(
                                 h in ln.lower()
                                 for h in (
-                                    "hiring",
+                                    "we're hiring",
+                                    "we are hiring",
                                     "contrat",
                                     "buscamos",
                                     "vacante",
-                                    "looking",
+                                    "oportunidad",
                                     "sumate",
                                     "sumáte",
                                     "view job",
+                                    "hiring a",
+                                    "hiring an",
                                 )
                             )
                         ),
@@ -1834,16 +1943,17 @@ def scrape_linkedin_hiring(
                         else keyword,
                     )
                     published_raw = str(item.get("published") or "")
-                    published_at = (
-                        parse_published_at(published_raw)
-                        or parse_relative_published(published_raw)
-                    )
+                    published_at = _linkedin_hiring_parse_published(published_raw)
+                    location = (
+                        str(item.get("location") or "").strip()
+                        or _linkedin_hiring_location_from_text(text)
+                    )[:120]
 
                     jobs.append(
                         {
                             "title": f"[#Hiring] {title_line}"[:200],
                             "company": company,
-                            "location": str(item.get("location") or "")[:120],
+                            "location": location,
                             "description": (
                                 "Post de LinkedIn con intención de contratación. "
                                 f"Búsqueda: {keyword}.\n\n{text[:4000]}"
@@ -1855,10 +1965,13 @@ def scrape_linkedin_hiring(
                     )
                     term_kept += 1
                     logger.info(
-                        "LinkedIn #Hiring: ✓ guardado #%d | %s | %s | %s",
+                        "LinkedIn #Hiring: ✓ guardado #%d | %s | %s | "
+                        "loc=%s | pub=%s | %s",
                         len(jobs),
                         company[:40],
                         title_line[:60],
+                        location or "—",
+                        published_raw or published_at or "—",
                         href[:90],
                     )
 

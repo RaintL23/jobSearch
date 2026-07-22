@@ -705,6 +705,89 @@ _HIRING_REGION_RESTRICTIONS: dict[str, tuple[frozenset[str], tuple[str, ...]]] =
             "must be located in india",
         ),
     ),
+    # Países LATAM: "contratando en México" ≠ abierto a Argentina.
+    # Frases en ASCII (se comparan vía _norm).
+    "mx": (
+        frozenset({"mx"}),
+        (
+            "en mexico",
+            "mexico only",
+            "based in mexico",
+            "located in mexico",
+            "contratando en mexico",
+            "cdmx",
+            "ciudad de mexico",
+            "mexico city",
+            "roles in mexico",
+            "position in mexico",
+            "job in mexico",
+            "vacante en mexico",
+            "para mexico",
+        ),
+    ),
+    "ar": (
+        frozenset({"ar"}),
+        (
+            "en argentina",
+            "argentina only",
+            "based in argentina",
+            "located in argentina",
+            "contratando en argentina",
+            "caba",
+            "buenos aires only",
+            "vacante en argentina",
+            "para argentina",
+        ),
+    ),
+    "co": (
+        frozenset({"co"}),
+        (
+            "en colombia",
+            "colombia only",
+            "based in colombia",
+            "contratando en colombia",
+            "bogota",
+            "vacante en colombia",
+            "para colombia",
+        ),
+    ),
+    "cl": (
+        frozenset({"cl"}),
+        (
+            "en chile",
+            "chile only",
+            "based in chile",
+            "contratando en chile",
+            "santiago de chile",
+            "vacante en chile",
+            "para chile",
+        ),
+    ),
+    "pe": (
+        frozenset({"pe"}),
+        (
+            "en peru",
+            "peru only",
+            "based in peru",
+            "contratando en peru",
+            "lima, peru",
+            "vacante en peru",
+            "para peru",
+        ),
+    ),
+    "br": (
+        frozenset({"br"}),
+        (
+            "en brasil",
+            "en brazil",
+            "brazil only",
+            "brasil only",
+            "based in brazil",
+            "based in brasil",
+            "contratando en brasil",
+            "sao paulo",
+        ),
+    ),
 }
 
 
@@ -746,7 +829,7 @@ def linkedin_hiring_location_ok(
     # 2) Restricciones regionales explícitas.
     restricted_hit = False
     for _, (allowed_iso, phrases) in _HIRING_REGION_RESTRICTIONS.items():
-        if any(p in low for p in phrases):
+        if any(_norm(p) in low for p in phrases):
             restricted_hit = True
             # Si el usuario pertenece a la región permitida → OK.
             if user_iso & allowed_iso:
