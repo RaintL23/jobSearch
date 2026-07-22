@@ -24,11 +24,9 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
 
 from backend.ai.engine import (
     AIEngineError,
-    batch_analyze_relevance,
     extract_profile_from_cv,
     generate_application_email,
     generate_cover_letter,
@@ -43,23 +41,23 @@ from backend.auth.sessions import (
 )
 from backend.core.config import get_settings
 from backend.core.runtime_key import has_runtime_key, set_runtime_key
-from backend.analysis.local import (
-    analyze_job_local,
-    linkedin_hiring_location_ok,
-    passes_gob_country_filter,
-    passes_language_filters,
-    salary_in_range,
-)
-from backend.core.dates import hours_since_published
-from backend.core.query_match import extract_location
-from backend.scraping import (
-    SOURCE_LABELS,
-    SOURCE_LATAM_RANK,
-    is_linkedin_hiring_permalink,
-    search_jobs,
-)
-from backend.scraping.filters import merge_profile_filters, _normalize_filters
+from backend.scraping import SOURCE_LABELS, search_jobs
+from backend.scraping.filters import _normalize_filters
 from backend.core.utils import PDFExtractionError, extract_text_from_pdf
+from backend.api.schemas import (
+    ApplicationEmailRequest,
+    AuthLoginRequest,
+    CancelSearchRequest,
+    CoverLetterRequest,
+    SearchRequest,
+    SetKeyRequest,
+)
+from backend.api.pipeline import (
+    _analyze_raw_jobs,
+    _filters_from_payload,
+    _format_analyze_discard_message,
+    _prepare_search,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -120,64 +118,6 @@ app.add_middleware(
 )
 
 
-class ProfilePayload(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    name: str = "Candidato"
-    roles: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
-    experience_years: int | float = 0
-    summary: str = ""
-    location: str = ""
-    country: str = "mx"
-
-
-class SearchFilters(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    queries: list[str] = Field(default_factory=list)
-    query: str = ""
-    locations: list[str] = Field(default_factory=list)
-    location: str = ""
-    # Multi-selección (vacío = cualquiera)
-    posted_within: list[str] = Field(default_factory=list)
-    experience_levels: list[str] = Field(default_factory=list)
-    work_modes: list[str] = Field(default_factory=list)
-    countries: list[str] = Field(default_factory=list)
-    # Compat
-    experience_level: str = "any"
-    work_mode: str = "any"
-    country: str = ""
-    salary_min_usd: float | None = None
-    salary_max_usd: float | None = None
-    posting_languages: list[str] = Field(default_factory=list)
-    required_languages: list[str] = Field(default_factory=list)
-    posting_language: str = "any"
-    required_language: str = "any"
-    sources: list[str] = Field(default_factory=list)
-
-
-class SearchRequest(BaseModel):
-    profile: ProfilePayload = Field(default_factory=lambda: ProfilePayload(country=""))
-    filters: SearchFilters = Field(default_factory=SearchFilters)
-
-
-class CancelSearchRequest(BaseModel):
-    run_id: str = Field(min_length=1, max_length=100)
-
-
-class CoverLetterRequest(BaseModel):
-    profile: ProfilePayload
-    job: dict[str, Any]
-
-
-class ApplicationEmailRequest(BaseModel):
-    """PASO 4 · borrador de email cuando la oferta trae contact_email."""
-
-    profile: ProfilePayload
-    job: dict[str, Any]
-
-
 @app.get("/")
 async def serve_index() -> FileResponse:
     index_path = FRONTEND_DIR / "index.html"
@@ -234,290 +174,6 @@ async def resolve_filters(payload: SearchRequest) -> dict[str, Any]:
     """
     _profile, filters_dict = _filters_from_payload(payload)
     return {"filters": _normalize_filters(filters_dict)}
-
-
-def _filters_from_payload(payload: SearchRequest) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Perfil + filtros efectivos (`profile.filters` como defaults del backend)."""
-    profile_dict = payload.profile.model_dump()
-    filters_dict = merge_profile_filters(profile_dict, payload.filters.model_dump())
-
-    queries = list(filters_dict.get("queries") or [])
-    if filters_dict.get("query"):
-        queries.append(filters_dict["query"])
-    queries = [q.strip() for q in queries if str(q).strip()]
-    filters_dict["queries"] = queries
-    return profile_dict, filters_dict
-
-
-def _prepare_search(payload: SearchRequest) -> tuple[dict[str, Any], dict[str, Any]]:
-    profile_dict, filters_dict = _filters_from_payload(payload)
-
-    has_roles = bool(profile_dict.get("roles"))
-    has_skills = bool(profile_dict.get("skills"))
-    if not filters_dict.get("queries") and not has_roles and not has_skills:
-        raise HTTPException(
-            status_code=400,
-            detail="Indica al menos un texto de búsqueda, o roles/skills en el perfil.",
-        )
-    return profile_dict, filters_dict
-
-
-def _analyze_raw_jobs(
-    profile_dict: dict[str, Any],
-    filters_dict: dict[str, Any],
-    raw_jobs: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """
-    PASO 3–4 unificado (todas las fuentes).
-
-    PASO 3: analyze_job_local (ubicación, salario, skills, contact_email).
-    PASO 4: filtros país/ubicación/idioma/salario + match; IA solo si hace falta
-    (ubicación ambigua) o bajo demanda (email / cover letter).
-    """
-    filter_countries: list[str] = list(filters_dict.get("countries") or [])
-    profile_country: str = str(profile_dict.get("country") or "")
-    filter_locations: list[str] = list(filters_dict.get("locations") or [])
-    if profile_dict.get("location"):
-        filter_locations = filter_locations + [str(profile_dict["location"])]
-    match_available = bool(profile_dict.get("skills") or profile_dict.get("roles"))
-
-    posting_langs = list(filters_dict.get("posting_languages") or [])
-    if filters_dict.get("posting_language") and filters_dict["posting_language"] != "any":
-        posting_langs.append(filters_dict["posting_language"])
-    required_langs = list(filters_dict.get("required_languages") or [])
-    if filters_dict.get("required_language") and filters_dict["required_language"] != "any":
-        required_langs.append(filters_dict["required_language"])
-
-    results: list[dict[str, Any]] = []
-    discard_counts: dict[str, int] = {}
-    discard_sample: list[dict[str, Any]] = []
-
-    def _note_discard(job: dict[str, Any], reason: str) -> None:
-        discard_counts[reason] = discard_counts.get(reason, 0) + 1
-        if len(discard_sample) < 12:
-            discard_sample.append(
-                {
-                    "title": str(job.get("title") or "")[:120],
-                    "company": str(job.get("company") or "")[:80],
-                    "reason": reason,
-                    "reason_label": {
-                        "country": "país",
-                        "language": "idioma",
-                        "salary": "salario",
-                        "invalid_link": "enlace no específico",
-                    }.get(reason, reason),
-                }
-            )
-
-    hiring_user_country = (filter_countries[0] if filter_countries else profile_country) or ""
-
-    for job in raw_jobs:
-        # --- PASO 4 · filtro país (GetOnBoard, datos estructurados) ---
-        if job.get("source") == "getonboard":
-            if not passes_gob_country_filter(job, filter_countries, profile_country):
-                logger.debug(
-                    "GOB country filter: descartando '%s' (%s) — países oferta: %s",
-                    job.get("title"),
-                    job.get("company"),
-                    job.get("_countries_raw"),
-                )
-                _note_discard(job, "country")
-                continue
-
-        # --- PASO 4 · filtro ubicación (LinkedIn #Hiring) ---
-        needs_ai_location = False
-        if job.get("source") == "linkedin_hiring":
-            if not is_linkedin_hiring_permalink(str(job.get("url") or "")):
-                _note_discard(job, "invalid_link")
-                continue
-            verdict = linkedin_hiring_location_ok(
-                str(job.get("description") or ""),
-                hiring_user_country,
-                filter_locations,
-            )
-            if verdict is False:
-                logger.debug(
-                    "LinkedIn #Hiring location filter: descartando '%s' (%s)",
-                    job.get("title"),
-                    job.get("company"),
-                )
-                _note_discard(job, "country")
-                continue
-            needs_ai_location = verdict is None
-
-        # --- PASO 3 · revisar descripción (skills, salario, email, …) ---
-        analyzed = analyze_job_local(profile_dict, job)
-        if needs_ai_location:
-            analyzed["_needs_ai_location"] = True
-        if not match_available:
-            analyzed["match_percent"] = None
-            analyzed["matched_skills"] = []
-            analyzed["missing_skills"] = []
-            analyzed["advice"] = "Cargá un perfil CV para calcular el match y recibir recomendaciones."
-
-        # --- PASO 4 · clasificación: idioma + salario + skills (match ya calculado) ---
-        if not passes_language_filters(analyzed, posting_langs, required_langs):
-            _note_discard(job, "language")
-            continue
-        if not salary_in_range(
-            {
-                "min_usd": analyzed.get("salary_min_usd"),
-                "max_usd": analyzed.get("salary_max_usd"),
-            },
-            filters_dict.get("salary_min_usd"),
-            filters_dict.get("salary_max_usd"),
-        ):
-            _note_discard(job, "salary")
-            continue
-
-        analyzed["description"] = (job.get("description") or "")[:4000]
-        analyzed["source"] = job.get("source") or analyzed.get("source") or ""
-        analyzed["company"] = job.get("company") or analyzed.get("company") or "Empresa no indicada"
-        analyzed["published_at"] = job.get("published_at") or analyzed.get("published_at")
-        analyzed["location"] = (
-            job.get("location")
-            or analyzed.get("location")
-            or extract_location(job)
-            or ""
-        )
-        # Pasar datos de países al resultado para el paso de IA (se eliminan al final).
-        analyzed["_countries_raw"] = job.get("_countries_raw") or []
-        results.append(analyzed)
-
-    # --- PASO 4 · IA batch solo para ubicación ambigua (GOB + #Hiring) ---
-    if match_available:
-        dropped = _apply_ai_batch(profile_dict, filter_countries, profile_country, results)
-        for job in dropped:
-            _note_discard(job, "country")
-
-    # Eliminar campos internos antes de devolver al frontend.
-    for job in results:
-        job.pop("_countries_raw", None)
-        job.pop("_needs_ai_location", None)
-
-    def _sort_key(job: dict[str, Any]) -> tuple[int, float, int]:
-        hours = hours_since_published(job.get("published_at"))
-        return (
-            SOURCE_LATAM_RANK.get(str(job.get("source") or ""), 99),
-            hours if hours is not None else float("inf"),
-            -(int(job.get("match_percent") or 0)),
-        )
-
-    results.sort(key=_sort_key)
-    analyze_meta = {
-        "input_count": len(raw_jobs),
-        "kept_count": len(results),
-        "match_available": match_available,
-        "discarded_by_reason": discard_counts,
-        "discarded_sample": discard_sample,
-    }
-    return results, analyze_meta
-
-
-def _format_analyze_discard_message(meta: dict[str, Any]) -> str:
-    input_n = int(meta.get("input_count") or 0)
-    kept_n = int(meta.get("kept_count") or 0)
-    counts = meta.get("discarded_by_reason") or {}
-    discarded_n = input_n - kept_n
-    suffix = "con match calculado" if meta.get("match_available") else "sin cálculo de match"
-    msg = f"Listo · {kept_n} oferta(s) {suffix}"
-    if discarded_n > 0 and counts:
-        labels = {
-            "country": "país",
-            "language": "idioma",
-            "salary": "salario",
-            "invalid_link": "enlace no específico",
-        }
-        detail = ", ".join(
-            f"{labels.get(k, k)}: {v}"
-            for k, v in sorted(counts.items(), key=lambda kv: -kv[1])
-        )
-        msg += f" · {discarded_n} descartada(s) en análisis ({detail})"
-    elif discarded_n > 0:
-        msg += f" · {discarded_n} descartada(s) en análisis"
-    return msg + "."
-
-
-def _apply_ai_batch(
-    profile_dict: dict[str, Any],
-    filter_countries: list[str],
-    profile_country: str,
-    results: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """
-    Analiza en batch los casos de ubicación ambigua y match borderline con IA.
-
-    Cubre dos fuentes:
-      - GetOnBoard sin países estructurados (match 30-75).
-      - LinkedIn #Hiring marcado como ambiguo por la heurística de ubicación.
-
-    Solo actúa si AI_MATCH_ENABLED=true en .env y hay API key configurada.
-    Una sola llamada a Gemini por grupo de hasta 6 ofertas (token-eficiente).
-    Modifica `results` en lugar (ajusta match_percent y advice) y devuelve la
-    lista de ofertas eliminadas por país no compatible (para el conteo de
-    descartes).
-    """
-    settings = get_settings()
-    if not settings.ai_match_enabled or (not settings.has_api_key and not has_runtime_key()):
-        return []
-
-    # Ofertas con ubicación ambigua que más se benefician del análisis IA:
-    #  - GOB sin países estructurados y con match borderline.
-    #  - #Hiring que la heurística no pudo clasificar (posible US-only, etc.).
-    ambiguous_idxs = [
-        i for i, j in enumerate(results)
-        if (
-            j.get("source") == "getonboard"
-            and not j.get("_countries_raw")
-            and 30 <= int(j.get("match_percent") or 0) <= 75
-        )
-        or (j.get("source") == "linkedin_hiring" and j.get("_needs_ai_location"))
-    ]
-
-    if not ambiguous_idxs:
-        return []
-
-    user_country = (filter_countries[0] if filter_countries else profile_country) or ""
-    batch_jobs = [results[i] for i in ambiguous_idxs]
-
-    try:
-        ai_entries = batch_analyze_relevance(profile_dict, batch_jobs, user_country)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("batch_analyze_relevance falló (se ignora): %s", exc)
-        return []
-
-    drop_idxs: set[int] = set()
-    for entry in ai_entries:
-        batch_pos = int(entry.get("idx", 0)) - 1
-        if batch_pos < 0 or batch_pos >= len(ambiguous_idxs):
-            continue
-        result_idx = ambiguous_idxs[batch_pos]
-        job = results[result_idx]
-
-        country_ok = entry.get("country_ok")
-        delta = int(entry.get("match_delta") or 0)
-        reason = str(entry.get("reason") or "").strip()
-
-        # #Hiring incompatible según la IA → excluir (validación de ubicación).
-        if country_ok is False and job.get("source") == "linkedin_hiring":
-            drop_idxs.add(result_idx)
-            continue
-
-        # GOB: penalización extra si la IA detecta incompatibilidad de país.
-        if country_ok is False:
-            delta = min(delta, -15)
-            reason = f"⚠️ País posiblemente no disponible. {reason}".strip()
-
-        job["match_percent"] = max(5, min(98, int(job.get("match_percent") or 0) + delta))
-
-        if reason:
-            existing_advice = job.get("advice") or ""
-            job["advice"] = f"[IA] {reason}\n{existing_advice}".strip()
-
-    dropped = [results[i] for i in sorted(drop_idxs)]
-    if drop_idxs:
-        results[:] = [r for i, r in enumerate(results) if i not in drop_idxs]
-    return dropped
 
 
 @app.post("/search-jobs")
@@ -726,13 +382,6 @@ async def auth_sessions_status(request: Request) -> dict[str, Any]:
     }
 
 
-class AuthLoginRequest(BaseModel):
-    timeout_sec: int = Field(default=600, ge=60, le=1800)
-    mode: str = "profile"  # profile | system | playwright
-    force_restart: bool = False
-    channel: str | None = None  # chrome | msedge
-
-
 @app.post("/auth/login/{site}")
 async def auth_login(
     site: str,
@@ -897,10 +546,6 @@ async def key_status() -> dict[str, Any]:
     if has_runtime_key():
         return {"has_key": True, "source": "runtime"}
     return {"has_key": False, "source": "none"}
-
-
-class SetKeyRequest(BaseModel):
-    api_key: str
 
 
 @app.post("/api/set-key")
