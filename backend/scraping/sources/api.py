@@ -23,11 +23,7 @@ import urllib.request
 from typing import Any
 
 from backend.core.config import get_settings
-from backend.core.dates import (
-    parse_published_at,
-    within_posted_window,
-)
-from backend.core.query_match import matches_search_queries
+from backend.core.dates import parse_published_at
 
 logger = logging.getLogger(__name__)
 
