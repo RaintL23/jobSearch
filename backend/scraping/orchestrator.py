@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 from threading import Event
 from typing import Any
@@ -181,141 +181,144 @@ def search_jobs(
         while pending:
             if cancel_event and cancel_event.is_set():
                 break
-            try:
-                fut = next(as_completed(pending, timeout=0.25))
-            except TimeoutError:
-                continue
-            pending.remove(fut)
-            source = futures[fut]
-            label = SOURCE_LABELS.get(source, source)
-            _emit(
-                on_progress,
-                event="progress",
-                source=source,
-                message=f"Procesando resultados de {label}…",
+            # wait() no lanza TimeoutError (a diferencia de as_completed): en
+            # Python 3.10 concurrent.futures.TimeoutError NO es el builtin.
+            done, pending = wait(
+                pending, timeout=0.25, return_when=FIRST_COMPLETED
             )
-            try:
-                raw_jobs = fut.result() or []
-                kept, discarded_sample, reason_counts = _partition_jobs(
-                    raw_jobs, filters, source=source
+            if not done:
+                continue
+            for fut in done:
+                source = futures[fut]
+                label = SOURCE_LABELS.get(source, source)
+                _emit(
+                    on_progress,
+                    event="progress",
+                    source=source,
+                    message=f"Procesando resultados de {label}…",
                 )
-                by_source[source] = kept
-                if raw_jobs:
-                    msg = _format_source_filter_message(
-                        raw_count=len(raw_jobs),
-                        kept_count=len(kept),
-                        reason_counts=reason_counts,
+                try:
+                    raw_jobs = fut.result() or []
+                    kept, discarded_sample, reason_counts = _partition_jobs(
+                        raw_jobs, filters, source=source
                     )
-                    sources[source] = {
-                        "ok": True,
-                        "count": len(kept),
-                        "raw_count": len(raw_jobs),
-                        "discarded_by_reason": reason_counts,
-                        "discarded_sample": discarded_sample,
-                        "message": msg,
-                    }
-                    _emit(
-                        on_progress,
-                        event="source_done",
-                        source=source,
-                        ok=True,
-                        count=len(kept),
-                        raw_count=len(raw_jobs),
-                        discarded_by_reason=reason_counts,
-                        discarded_sample=discarded_sample,
-                        message=f"{label}: {msg}",
-                    )
-                else:
-                    if source == "linkedin_hiring":
-                        if _linkedin_session_ready():
-                            diag = _linkedin_hiring_last_diag or {}
-                            bits = []
-                            if diag.get("js_roots") or diag.get("cards_seen"):
-                                bits.append(
-                                    f"DOM={diag.get('js_roots') or diag.get('cards_seen')}"
-                                )
-                            if diag.get("voyager_posts"):
-                                bits.append(f"red={diag['voyager_posts']}")
-                            if diag.get("skip_permalink"):
-                                bits.append(
-                                    f"sin permalink={diag['skip_permalink']}"
-                                )
-                            if diag.get("skip_open_to_work"):
-                                bits.append(
-                                    f"open-to-work={diag['skip_open_to_work']}"
-                                )
-                            if diag.get("skip_intent"):
-                                bits.append(
-                                    f"sin intención hiring={diag['skip_intent']}"
-                                )
-                            detail = (
-                                f" ({', '.join(bits)})" if bits else ""
-                            )
-                            msg = (
-                                "LinkedIn #Hiring: la página mostró resultados pero "
-                                f"ningún post quedó guardable{detail}. "
-                                "Si ves posts en el browser y sigue en 0, renová la "
-                                "sesión de LinkedIn."
-                            )
-                        else:
-                            msg = (
-                                "LinkedIn #Hiring sin sesión. Usá «Iniciar sesión» en LinkedIn "
-                                "y volvé a buscar. Es una fuente experimental."
-                            )
-                    elif source == "linkedin":
-                        if _linkedin_session_ready():
-                            msg = (
-                                "LinkedIn Jobs: sesión presente pero 0 ofertas (filtros muy "
-                                "estrictos, anti-bot o cambio de HTML)."
-                            )
-                        else:
-                            msg = (
-                                "LinkedIn Jobs no devolvió ofertas. Causas frecuentes: muro de "
-                                "login/authwall, bloqueo anti-bot, listado vacío o cambio de HTML."
-                            )
-                    elif source == "computrabajo":
-                        msg = (
-                            "Computrabajo no devolvió ofertas. Causas frecuentes: sin resultados "
-                            "para la búsqueda/país, selectores HTML cambiados o bloqueo temporal."
+                    by_source[source] = kept
+                    if raw_jobs:
+                        msg = _format_source_filter_message(
+                            raw_count=len(raw_jobs),
+                            kept_count=len(kept),
+                            reason_counts=reason_counts,
                         )
-                    elif source in ("remotive", "remoteok", "jobicy"):
-                        posted = filters.get("posted_within") or []
-                        delay_hint = (
-                            " Estas fuentes publican con delay (>24 h); prueba «Última semana» o «Último mes»."
-                            if "24h" in posted
-                            else ""
-                        )
-                        msg = (
-                            f"{label} no devolvió ofertas para estos filtros "
-                            f"(keywords, antigüedad o API vacía).{delay_hint}"
+                        sources[source] = {
+                            "ok": True,
+                            "count": len(kept),
+                            "raw_count": len(raw_jobs),
+                            "discarded_by_reason": reason_counts,
+                            "discarded_sample": discarded_sample,
+                            "message": msg,
+                        }
+                        _emit(
+                            on_progress,
+                            event="source_done",
+                            source=source,
+                            ok=True,
+                            count=len(kept),
+                            raw_count=len(raw_jobs),
+                            discarded_by_reason=reason_counts,
+                            discarded_sample=discarded_sample,
+                            message=f"{label}: {msg}",
                         )
                     else:
-                        msg = (
-                            f"{label} no devolvió ofertas para estos filtros "
-                            "(sin match de keywords o API vacía)."
+                        if source == "linkedin_hiring":
+                            if _linkedin_session_ready():
+                                diag = _linkedin_hiring_last_diag or {}
+                                bits = []
+                                if diag.get("js_roots") or diag.get("cards_seen"):
+                                    bits.append(
+                                        f"DOM={diag.get('js_roots') or diag.get('cards_seen')}"
+                                    )
+                                if diag.get("voyager_posts"):
+                                    bits.append(f"red={diag['voyager_posts']}")
+                                if diag.get("skip_permalink"):
+                                    bits.append(
+                                        f"sin permalink={diag['skip_permalink']}"
+                                    )
+                                if diag.get("skip_open_to_work"):
+                                    bits.append(
+                                        f"open-to-work={diag['skip_open_to_work']}"
+                                    )
+                                if diag.get("skip_intent"):
+                                    bits.append(
+                                        f"sin intención hiring={diag['skip_intent']}"
+                                    )
+                                detail = (
+                                    f" ({', '.join(bits)})" if bits else ""
+                                )
+                                msg = (
+                                    "LinkedIn #Hiring: la página mostró resultados pero "
+                                    f"ningún post quedó guardable{detail}. "
+                                    "Si ves posts en el browser y sigue en 0, renová la "
+                                    "sesión de LinkedIn."
+                                )
+                            else:
+                                msg = (
+                                    "LinkedIn #Hiring sin sesión. Usá «Iniciar sesión» en LinkedIn "
+                                    "y volvé a buscar. Es una fuente experimental."
+                                )
+                        elif source == "linkedin":
+                            if _linkedin_session_ready():
+                                msg = (
+                                    "LinkedIn Jobs: sesión presente pero 0 ofertas (filtros muy "
+                                    "estrictos, anti-bot o cambio de HTML)."
+                                )
+                            else:
+                                msg = (
+                                    "LinkedIn Jobs no devolvió ofertas. Causas frecuentes: muro de "
+                                    "login/authwall, bloqueo anti-bot, listado vacío o cambio de HTML."
+                                )
+                        elif source == "computrabajo":
+                            msg = (
+                                "Computrabajo no devolvió ofertas. Causas frecuentes: sin resultados "
+                                "para la búsqueda/país, selectores HTML cambiados o bloqueo temporal."
+                            )
+                        elif source in ("remotive", "remoteok", "jobicy"):
+                            posted = filters.get("posted_within") or []
+                            delay_hint = (
+                                " Estas fuentes publican con delay (>24 h); prueba «Última semana» o «Último mes»."
+                                if "24h" in posted
+                                else ""
+                            )
+                            msg = (
+                                f"{label} no devolvió ofertas para estos filtros "
+                                f"(keywords, antigüedad o API vacía).{delay_hint}"
+                            )
+                        else:
+                            msg = (
+                                f"{label} no devolvió ofertas para estos filtros "
+                                "(sin match de keywords o API vacía)."
+                            )
+                        sources[source] = {"ok": False, "count": 0, "message": msg}
+                        _emit(
+                            on_progress,
+                            event="source_done",
+                            source=source,
+                            ok=False,
+                            count=0,
+                            message=f"{label}: 0 ofertas. {msg}",
                         )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("%s no disponible: %s", source, exc)
+                    msg = f"{label} falló al scrapear: {exc}"
                     sources[source] = {"ok": False, "count": 0, "message": msg}
+                    by_source[source] = []
                     _emit(
                         on_progress,
                         event="source_done",
                         source=source,
                         ok=False,
                         count=0,
-                        message=f"{label}: 0 ofertas. {msg}",
+                        message=msg,
                     )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("%s no disponible: %s", source, exc)
-                msg = f"{label} falló al scrapear: {exc}"
-                sources[source] = {"ok": False, "count": 0, "message": msg}
-                by_source[source] = []
-                _emit(
-                    on_progress,
-                    event="source_done",
-                    source=source,
-                    ok=False,
-                    count=0,
-                    message=msg,
-                )
     finally:
         cancelled = bool(cancel_event and cancel_event.is_set())
         if cancelled:
