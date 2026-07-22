@@ -340,9 +340,11 @@ def _kill_browser(channel: str) -> None:
                     check=False,
                 )
             else:
-                # killall / pkill por nombre de proceso (macOS / Linux)
+                # pkill -x = match exacto por nombre (consistente con el
+                # pgrep -x usado en _browser_process_running). En Linux pkill
+                # (procps) está más disponible que killall (psmisc).
                 subprocess.run(
-                    ["killall", name],
+                    ["pkill", "-x", name],
                     capture_output=True,
                     text=True,
                     check=False,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from functools import lru_cache
 from typing import Any
 
@@ -23,12 +24,22 @@ logger = logging.getLogger(__name__)
 # entorno del proyecto siga funcionando además de la config tipada de abajo.
 load_dotenv()
 
+
+def _default_user_agent() -> str:
+    """User-Agent Chrome acorde al SO actual (Win/Mac/Linux) para no anunciar
+    Windows en una Mac: fingerprint más coherente para HTTP y Chromium headless."""
+    chrome = "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    if sys.platform == "darwin":
+        platform = "Macintosh; Intel Mac OS X 10_15_7"
+    elif sys.platform.startswith("linux"):
+        platform = "X11; Linux x86_64"
+    else:
+        platform = "Windows NT 10.0; Win64; x64"
+    return f"Mozilla/5.0 ({platform}) {chrome}"
+
+
 # User-Agent compartido por todos los clientes HTTP / Playwright del proyecto.
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
+DEFAULT_USER_AGENT = _default_user_agent()
 
 # Tasas aproximadas → USD. Suficientes para filtrar rangos salariales; no son
 # cotizaciones en vivo. Ajustables vía la variable de entorno FX_RATES_JSON.

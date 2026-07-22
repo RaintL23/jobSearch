@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -40,6 +41,20 @@ def _browser_candidates() -> list[tuple[str, list[str]]]:
         str(home / "Applications" / "Google Chrome.app" / "Contents" / "MacOS" / "Google Chrome"),
     ]
 
+    # Linux: resolvemos por PATH (los .exe/.app de arriba no existen ahí).
+    if sys.platform.startswith("linux"):
+        for name in (
+            "google-chrome",
+            "google-chrome-stable",
+            "chromium",
+            "chromium-browser",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+        ):
+            found = shutil.which(name)
+            if found:
+                paths.append(found)
+
     common_args = [
         f"--app={URL}",
         f"--user-data-dir={_ui_profile_dir}",
@@ -56,11 +71,16 @@ def open_ui_window() -> subprocess.Popen | None:
 
     for exe, args in _browser_candidates():
         try:
-            _browser_proc = subprocess.Popen(
-                [exe, *args],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            popen_kwargs = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if sys.platform != "win32":
+                # Nueva sesión/grupo de procesos para poder cerrar todo el árbol
+                # del navegador de forma fiable al terminar (killpg), igual que
+                # taskkill /T en Windows.
+                popen_kwargs["start_new_session"] = True
+            _browser_proc = subprocess.Popen([exe, *args], **popen_kwargs)
             print(f"  UI abierta en ventana dedicada ({Path(exe).name}).")
             return _browser_proc
         except OSError:
@@ -95,11 +115,18 @@ def close_ui_window() -> None:
                 check=False,
             )
         else:
-            proc.terminate()
+            # POSIX: cerramos todo el grupo de procesos (Chrome lanza hijos).
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.terminate()
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
     except Exception:  # noqa: BLE001
         pass
 
