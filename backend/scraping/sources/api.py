@@ -399,20 +399,6 @@ def _remotive_category(profile: dict[str, Any], filters: dict[str, Any]) -> str:
     return "software-dev"
 
 
-def _finalize(
-    job: dict[str, Any],
-    filters: dict[str, Any],
-    *,
-    source: str = "",
-) -> dict[str, Any] | None:
-    """
-    Compat: antes filtraba query/fecha aquí. Ahora devolvemos el job crudo;
-    el descarte con motivos ocurre en search_jobs._partition_jobs.
-    """
-    del filters, source
-    return job
-
-
 # ---------------------------------------------------------------------------
 # GetOnBoard
 # ---------------------------------------------------------------------------
@@ -508,9 +494,7 @@ def scrape_getonboard(
                 # Campo interno para filtro de país; se elimina antes de devolver al frontend.
                 "_countries_raw": [str(c).strip() for c in countries if str(c).strip()],
             }
-            finalized = _finalize(job, filters, source="getonboard")
-            if finalized:
-                jobs.append(finalized)
+            jobs.append(job)
 
     return jobs
 
@@ -574,9 +558,7 @@ def scrape_remotive(
                 "source": "remotive",
                 "published_at": parse_published_at(item.get("publication_date")),
             }
-            finalized = _finalize(job, filters, source="remotive")
-            if finalized:
-                jobs.append(finalized)
+            jobs.append(job)
 
     return jobs
 
@@ -642,9 +624,7 @@ def scrape_remoteok(
             "source": "remoteok",
             "published_at": parse_published_at(item.get("date") or item.get("epoch")),
         }
-        finalized = _finalize(job, filters, source="remoteok")
-        if finalized:
-            jobs.append(finalized)
+        jobs.append(job)
 
     return jobs
 
@@ -720,9 +700,7 @@ def scrape_jobicy(
                 "source": "jobicy",
                 "published_at": parse_published_at(item.get("pubDate")),
             }
-            finalized = _finalize(job, filters, source="jobicy")
-            if finalized:
-                jobs.append(finalized)
+            jobs.append(job)
 
     return jobs
 
