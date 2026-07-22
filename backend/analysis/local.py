@@ -201,6 +201,33 @@ def _parse_amount(raw: str) -> float | None:
         return None
 
 
+# Patrones de salario compilados una sola vez (extract_salary_usd corre por
+# oferta, hasta SCRAPE_SAFETY_CAP veces por búsqueda).
+_SAL_RANGE_LEADING = re.compile(  # ARS 2.500.000 - 3.000.000 | USD 3000-4500
+    r"(?i)\b(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|uyu|brl|"
+    r"pesos?(?:\s+(?:argentinos?|mexicanos?|colombianos?|chilenos?))?|"
+    r"soles?|reales?|d[oó]lares?)\b\s*"
+    r"([\d.,]+)\s*(?:k)?\s*(?:-|–|—|a|to|/)\s*"
+    r"(?:(?:usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|brl|\$)\s*)?"
+    r"([\d.,]+)\s*(?:k)?"
+)
+_SAL_RANGE_TRAILING = re.compile(  # 3000-4500 USD
+    r"(?i)([\d.,]+)\s*(?:k)?\s*(?:-|–|—|a|to)\s*([\d.,]+)\s*(?:k)?\s*"
+    r"(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|uyu|brl|"
+    r"pesos?(?:\s+(?:argentinos?|mexicanos?|colombianos?|chilenos?))?|"
+    r"soles?|reales?|d[oó]lares?)"
+)
+_SAL_RANGE_DOLLAR = re.compile(  # $3000 - $4500
+    r"(?i)\$\s*([\d.,]+)\s*(?:k)?\s*(?:-|–|—|a|to)\s*\$?\s*([\d.,]+)\s*(?:k)?"
+)
+_SAL_SINGLE = re.compile(  # USD 4000 | 4000 USD | $4000
+    r"(?i)(?:\b(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|brl)\b\s*([\d.,]+)\s*(?:k)?|"
+    r"([\d.,]+)\s*(?:k)?\s*\b(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|brl|"
+    r"pesos?|soles?|reales?|d[oó]lares?)\b|"
+    r"\$\s*([\d.,]+)\s*(?:k)?)"
+)
+
+
 def extract_salary_usd(text: str) -> dict[str, Any]:
     """
     Intenta extraer un rango salarial y convertirlo a USD.
@@ -262,15 +289,7 @@ def extract_salary_usd(text: str) -> dict[str, Any]:
         }
 
     # Rango con moneda al inicio: ARS 2.500.000 - 3.000.000 | USD 3000-4500
-    range_leading = re.compile(
-        r"(?i)\b(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|uyu|brl|"
-        r"pesos?(?:\s+(?:argentinos?|mexicanos?|colombianos?|chilenos?))?|"
-        r"soles?|reales?|d[oó]lares?)\b\s*"
-        r"([\d.,]+)\s*(?:k)?\s*(?:-|–|—|a|to|/)\s*"
-        r"(?:(?:usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|brl|\$)\s*)?"
-        r"([\d.,]+)\s*(?:k)?",
-    )
-    m = range_leading.search(blob)
+    m = _SAL_RANGE_LEADING.search(blob)
     if m:
         cur, a, b = m.group(1), m.group(2), m.group(3)
         amin, amax = _parse_amount(a), _parse_amount(b)
@@ -281,13 +300,7 @@ def extract_salary_usd(text: str) -> dict[str, Any]:
             return out
 
     # Rango con moneda al final: 3000-4500 USD
-    range_trailing = re.compile(
-        r"(?i)([\d.,]+)\s*(?:k)?\s*(?:-|–|—|a|to)\s*([\d.,]+)\s*(?:k)?\s*"
-        r"(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|uyu|brl|"
-        r"pesos?(?:\s+(?:argentinos?|mexicanos?|colombianos?|chilenos?))?|"
-        r"soles?|reales?|d[oó]lares?)",
-    )
-    m = range_trailing.search(blob)
+    m = _SAL_RANGE_TRAILING.search(blob)
     if m:
         a, b, cur = m.group(1), m.group(2), m.group(3)
         amin, amax = _parse_amount(a), _parse_amount(b)
@@ -298,10 +311,7 @@ def extract_salary_usd(text: str) -> dict[str, Any]:
             return out
 
     # $3000 - $4500
-    range_dollar = re.compile(
-        r"(?i)\$\s*([\d.,]+)\s*(?:k)?\s*(?:-|–|—|a|to)\s*\$?\s*([\d.,]+)\s*(?:k)?",
-    )
-    m = range_dollar.search(blob)
+    m = _SAL_RANGE_DOLLAR.search(blob)
     if m:
         amin, amax = _parse_amount(m.group(1)), _parse_amount(m.group(2))
         if amin is not None and amax is not None:
@@ -312,13 +322,7 @@ def extract_salary_usd(text: str) -> dict[str, Any]:
             return out
 
     # Monto único: USD 4000 | 4000 USD | $4000
-    single = re.compile(
-        r"(?i)(?:\b(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|brl)\b\s*([\d.,]+)\s*(?:k)?|"
-        r"([\d.,]+)\s*(?:k)?\s*\b(usd|us\$|u\$s|eur|€|mxn|ars|cop|clp|pen|brl|"
-        r"pesos?|soles?|reales?|d[oó]lares?)\b|"
-        r"\$\s*([\d.,]+)\s*(?:k)?)",
-    )
-    m = single.search(blob)
+    m = _SAL_SINGLE.search(blob)
     if m:
         if m.group(1) and m.group(2):
             cur, amount = m.group(1), m.group(2)
