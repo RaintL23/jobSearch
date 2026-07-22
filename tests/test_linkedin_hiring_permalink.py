@@ -120,6 +120,13 @@ def test_hiring_intent_rejects_open_to_work():
         "I'm currently open to new opportunities as a Senior PHP Backend Developer. "
         "Nikita is open to work. View job preferences"
     )
+    # Caso real: título con pipes; el slug del permalink trae _hiring- por el hashtag.
+    otw_title = "Open to Work | .NET Developer | Immediate Joiner Hello Connect"
+    hiring_slug = (
+        "https://www.linkedin.com/posts/example_"
+        "hiring-dotnet-share-7484508470059188224-0YRO/"
+    )
+    assert not _linkedin_hiring_intent(otw_title, permalink=hiring_slug)
 
 
 def test_hiring_intent_accepts_truncated_latam_recruiter_post():
@@ -142,3 +149,61 @@ def test_hiring_intent_accepts_truncated_latam_recruiter_post():
     assert _linkedin_hiring_intent(snippet, permalink=permalink)
     # Sin permalink y solo snippet corto: "nueva oportunidad" ya alcanza.
     assert _linkedin_hiring_intent(snippet)
+
+
+def test_hiring_location_rejects_india_and_requires_latam():
+    from backend.analysis.local import linkedin_hiring_location_ok
+
+    locs = ["Argentina", "LATAM", "Remoto LATAM"]
+    assert (
+        linkedin_hiring_location_ok(
+            "WE'RE HIRING | Multiple IT Openings Across India",
+            "ar",
+            locs,
+        )
+        is False
+    )
+    assert (
+        linkedin_hiring_location_ok(
+            "Bangalore | Immediate Joiner | .NET Full Stack Developer",
+            "ar",
+            locs,
+        )
+        is False
+    )
+    assert (
+        linkedin_hiring_location_ok(
+            "We're hiring a .NET Developer. Apply now!",
+            "ar",
+            locs,
+        )
+        is False
+    )
+    assert (
+        linkedin_hiring_location_ok(
+            "We're hiring a .NET Developer Remoto LATAM. Join our team!",
+            "ar",
+            locs,
+        )
+        is True
+    )
+    assert (
+        linkedin_hiring_location_ok(
+            "NUEVA OPORTUNIDAD INTERNACIONAL | .NET API DEVELOPER",
+            "ar",
+            locs,
+        )
+        is True
+    )
+
+
+def test_activity_id_published_fallback():
+    from backend.scraping.sources.linkedin_hiring import (
+        _linkedin_activity_published_at,
+    )
+
+    iso = _linkedin_activity_published_at(
+        "https://www.linkedin.com/feed/update/urn:li:activity:7484508470059188224/"
+    )
+    assert iso is not None
+    assert iso.startswith("2026-07-")

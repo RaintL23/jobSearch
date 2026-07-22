@@ -251,6 +251,10 @@ def search_jobs(
                                     bits.append(
                                         f"sin intención hiring={diag['skip_intent']}"
                                     )
+                                if diag.get("skip_location"):
+                                    bits.append(
+                                        f"ubicación={diag['skip_location']}"
+                                    )
                                 detail = (
                                     f" ({', '.join(bits)})" if bits else ""
                                 )

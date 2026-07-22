@@ -630,7 +630,14 @@ _HIRING_OPEN_TERMS: tuple[str, ...] = (
     "sudamerica",
     "south america",
     "remoto global",
+    "remoto latam",
+    "remote latam",
     "desde cualquier lugar",
+    "oportunidad internacional",
+    "international opportunity",
+    "international role",
+    "100% remoto",
+    "100% remote",
 )
 
 # Restricciones por región: si aparece la frase, la oferta se limita a esa
@@ -703,6 +710,52 @@ _HIRING_REGION_RESTRICTIONS: dict[str, tuple[frozenset[str], tuple[str, ...]]] =
             "india only",
             "based in india",
             "must be located in india",
+            "across india",
+            "openings across india",
+            "openings in india",
+            "hiring in india",
+            "jobs in india",
+            "roles in india",
+            "pan india",
+            "pan-india",
+            "india openings",
+            "bangalore",
+            "bengaluru",
+            "hyderabad",
+            "pune",
+            "chennai",
+            "noida",
+            "gurgaon",
+            "gurugram",
+            "mumbai",
+            "delhi ncr",
+            "delhi,",
+            "kolkata",
+            "ahmedabad",
+            "jaipur",
+            "coimbatore",
+            "trivandrum",
+            "thiruvananthapuram",
+        ),
+    ),
+    "ph": (
+        frozenset({"ph"}),
+        (
+            "philippines only",
+            "based in the philippines",
+            "manila",
+            "cebu",
+            "makati",
+        ),
+    ),
+    "pk": (
+        frozenset({"pk"}),
+        (
+            "pakistan only",
+            "based in pakistan",
+            "karachi",
+            "lahore",
+            "islamabad",
         ),
     ),
     # Países LATAM: "contratando en México" ≠ abierto a Argentina.
@@ -804,6 +857,23 @@ def _hiring_user_iso(user_country: str, user_locations: list[str] | None) -> set
     return iso
 
 
+def _user_wants_latam_scope(user_locations: list[str] | None) -> bool:
+    """True si el usuario filtró explícitamente por LATAM / remoto LATAM."""
+    blob = _norm(" ".join(user_locations or []))
+    return any(
+        term in blob
+        for term in (
+            "latam",
+            "latin america",
+            "latinoam",
+            "sudamerica",
+            "south america",
+            "remoto latam",
+            "remote latam",
+        )
+    )
+
+
 def linkedin_hiring_location_ok(
     text: str,
     user_country: str = "",
@@ -814,13 +884,17 @@ def linkedin_hiring_location_ok(
 
     Devuelve:
       True  → abierto / compatible (LATAM, global, o menciona el país del usuario)
-      False → claramente restringido a otra región (p. ej. "US based" para AR)
+      False → claramente restringido a otra región (p. ej. Bangalore / Across India)
       None  → ambiguo (conviene apoyarse en la IA)
+
+    Si el usuario filtró por LATAM y el post no menciona LATAM/global/su país,
+    se rechaza (False) en lugar de dejarlo pasar ambiguo.
     """
     if not text:
         return None
     low = _norm(text)
     user_iso = _hiring_user_iso(user_country, user_locations)
+    wants_latam = _user_wants_latam_scope(user_locations)
 
     # 1) Apertura global / LATAM → permitido.
     if any(term in low for term in _HIRING_OPEN_TERMS):
@@ -845,7 +919,11 @@ def linkedin_hiring_location_ok(
                 if code == iso and name in low:
                     return True
 
-    # 4) Sin señales claras → ambiguo.
+    # 4) Filtro LATAM activo y sin señal geográfica útil → rechazar.
+    if wants_latam:
+        return False
+
+    # 5) Sin señales claras → ambiguo.
     return None
 
 

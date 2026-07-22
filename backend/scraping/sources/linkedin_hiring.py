@@ -12,6 +12,7 @@ from urllib.parse import quote_plus, urlsplit
 
 from playwright.sync_api import Page
 
+from backend.analysis.local import linkedin_hiring_location_ok
 from backend.core.dates import parse_published_at, parse_relative_published
 from backend.core.query_match import matches_search_queries
 from backend.scraping.browser import (
@@ -21,7 +22,7 @@ from backend.scraping.browser import (
     _new_page,
 )
 from backend.scraping.constants import BrowserTarget
-from backend.scraping.filters import _normalize_filters, _search_queries
+from backend.scraping.filters import _locations, _normalize_filters, _search_queries
 
 logger = logging.getLogger(__name__)
 
@@ -88,17 +89,19 @@ LINKEDIN_HIRING_HINTS = (
 )
 
 # Candidatos buscando trabajo (misma búsqueda #Hiring).
-# Si hay señal fuerte de candidato y NO hay señal fuerte de empleador → descartar,
-# aunque el post tenga #Hiring.
+# Cualquier señal de candidato descarta el post, aunque el permalink traiga
+# _hiring- (muchos job-seekers hashean #Hiring) o haya texto ambiguo.
 LINKEDIN_OPEN_TO_WORK_HINTS = (
     "is open to work",
-    "open to work\n",
+    "open to work",  # "Open to Work | .NET Developer | Immediate Joiner"
     "#opentowork",
+    "#open to work",
     " currently open to new opportunities",
     "looking for new opportunities as ",
     "looking for new opportunities as a",
     "looking for new opportunities",
     "actively looking for new opportunities",
+    "currently looking for new opportunities",
     "i'm actively looking",
     "i am actively looking",
     "i'm looking for new",
@@ -110,6 +113,7 @@ LINKEDIN_OPEN_TO_WORK_HINTS = (
     "seeking opportunities as",
     "available for new opportunities",
     "available for opportunities",
+    "available to join immediately",
     "view job preferences",
     "i'm currently open",
     "i am currently open",
@@ -315,17 +319,24 @@ _LINKEDIN_HIRING_EXTRACT_JS = r"""
       // Stamps cortos típicos del feed: 7h, 2d, 15m, 3w, 1mo
       const STAMP = /^(?:\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|mo|y)|just now|ahora|ayer|yesterday)$/i;
       const STAMP_PREFIX = /^(\d+\s*(?:m|min|mins|h|hr|hrs|d|w|wk|mo|y))\b/i;
+      const REL_LONG = /(\d+)\s*(minute|minutes|min|hour|hours|hr|hrs|day|days|week|weeks|month|months|minuto|minutos|hora|horas|d[ií]a|d[ií]as|semana|semanas|mes|meses)\s*(ago|atr[aá]s)?/i;
       const nodes = el.querySelectorAll(
         "span, a, time, div.update-components-actor__sub-description, " +
         "span.feed-shared-actor__sub-description, " +
-        'a[href*="activity"] span, a[href*="/posts/"] span'
+        'a[href*="activity"] span, a[href*="/posts/"] span, ' +
+        'a[href*="activity"], a[href*="/posts/"]'
       );
       for (const node of nodes) {
+        const aria = (node.getAttribute && (node.getAttribute("aria-label") || node.getAttribute("title"))) || "";
+        if (aria) {
+          const am = aria.match(REL_LONG) || aria.match(STAMP_PREFIX);
+          if (am) return am[0].replace(/\s+/g, " ").trim();
+        }
         let t = (node.innerText || node.textContent || "")
           .replace(/[•·|]/g, " ")
           .replace(/\s+/g, " ")
           .trim();
-        if (!t || t.length > 24) continue;
+        if (!t || t.length > 40) continue;
         // Evitar el headline del recruiter ("Talent Acquisition | …").
         if (/talent|recruiter|developer|engineer|hiring manager/i.test(t) && !STAMP.test(t)) {
           continue;
@@ -333,6 +344,8 @@ _LINKEDIN_HIRING_EXTRACT_JS = r"""
         if (STAMP.test(t)) return t;
         const m = t.match(STAMP_PREFIX);
         if (m) return m[1].replace(/\s+/g, "");
+        const rl = t.match(REL_LONG);
+        if (rl && t.length <= 28) return rl[0].replace(/\s+/g, " ").trim();
       }
       return "";
     }
@@ -705,6 +718,38 @@ def _linkedin_hiring_parse_published(raw: str) -> str | None:
     )
 
 
+def _linkedin_activity_published_at(permalink: str) -> str | None:
+    """
+    Fallback: el ID de activity/ugcPost de LinkedIn es un snowflake
+    (timestamp_ms = id >> 22). Sirve cuando el DOM no expone '16m'/'2d'.
+    """
+    blob = permalink or ""
+    m = (
+        _ACTIVITY_RE.search(blob)
+        or _UGC_POST_RE.search(blob)
+        or _ACTIVITY_LOOSE_RE.search(blob)
+        or _POSTS_ID_RE.search(blob)
+    )
+    if not m:
+        return None
+    try:
+        activity_id = int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+    if activity_id < 1_000_000_000_000_000:  # IDs reales ~18 dígitos
+        return None
+    try:
+        from datetime import datetime, timezone
+
+        ts_ms = activity_id >> 22
+        dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+        if not (2015 <= dt.year <= 2100):
+            return None
+        return dt.isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _linkedin_hiring_location_from_text(text: str) -> str:
     """Best-effort: saca ubicación explícita del cuerpo del post."""
     blob = text or ""
@@ -714,9 +759,15 @@ def _linkedin_hiring_location_from_text(text: str) -> str:
         r"(?i)\b(?:based in|located in|en)\s+"
         r"(m[eé]xico|mexico|argentina|colombia|chile|per[uú]|brasil|brazil|"
         r"uruguay|ecuador|latam|latin america|latinoam[eé]rica|"
-        r"remoto|remote|worldwide)([^\n|;]{0,40})",
+        r"india|bangalore|bengaluru|hyderabad|remoto|remote|worldwide)"
+        r"([^\n|;]{0,40})",
         r"(?i)\b(cdmx|ciudad de m[eé]xico|buenos aires|caba|bogot[aá]|"
-        r"santiago|lima|remoto latam|remote latam)\b",
+        r"santiago|lima|remoto latam|remote latam|"
+        r"bangalore|bengaluru|hyderabad|pune|chennai|mumbai|"
+        r"across india|pan[\s\-]?india)\b",
+        # Título tipo "📍 Bangalore | …" / "… Across India"
+        r"(?i)(?:^|\||📍)\s*(bangalore|bengaluru|hyderabad|pune|chennai|"
+        r"mumbai|noida|gurgaon|gurugram|delhi|india)\b",
     )
     for pat in patterns:
         m = re.search(pat, blob)
@@ -726,7 +777,7 @@ def _linkedin_hiring_location_from_text(text: str) -> str:
             bit = " ".join(g for g in m.groups() if g).strip(" .,-")
         else:
             bit = m.group(0).strip(" .,-")
-        bit = " ".join(bit.split()).strip(" .,-!|")
+        bit = " ".join(bit.split()).strip(" .,-!|📍")
         if 2 <= len(bit) <= 80:
             return bit[:120]
     # Señal corta al final del título: "... México! MX"
@@ -745,8 +796,8 @@ def _linkedin_hiring_intent(text: str, *, permalink: str = "") -> bool:
     True si el post parece oferta de empleador (no candidato open-to-work).
 
     Regla clave: el hashtag #Hiring solo NO alcanza. Muchos candidatos lo usan
-    («I'm actively looking for new opportunities… #Hiring»). Hace falta una
-    señal fuerte de empleador (we're hiring / buscamos / vacante / …).
+    («Open to Work | .NET… #Hiring»). Cualquier señal de job-seeker descarta,
+    aunque el slug del permalink lleve `_hiring-`.
     """
     low = f" {(text or '').lower()} "
     slug = (permalink or "").lower()
@@ -759,21 +810,15 @@ def _linkedin_hiring_intent(text: str, *, permalink: str = "") -> bool:
     def _is_seeker(blob: str) -> bool:
         return any(h in blob for h in LINKEDIN_OPEN_TO_WORK_HINTS)
 
-    seeker = _is_seeker(low)
-    employer = _strong_employer(low)
-
-    # Candidato claro sin oferta real → afuera, aunque tenga #Hiring.
-    if seeker and not employer:
+    # Candidato → siempre afuera (gana sobre señales de empleador / slug).
+    if _is_seeker(low):
         return False
 
-    if employer:
+    if _strong_employer(low):
         return True
 
     # Permalink canónico a veces incluye hashtags del post (_hiring-…).
-    # Solo aceptarlo si NO parece candidato.
-    if not seeker and (
-        "hiring" in slug or "contrat" in slug or "vacante" in slug
-    ):
+    if "hiring" in slug or "contrat" in slug or "vacante" in slug:
         return True
 
     # Solo #Hiring / token débil sin más contexto → insuficiente.
@@ -1035,7 +1080,7 @@ def _linkedin_hiring_merge_posts(
 ) -> list[dict[str, Any]]:
     """
     Combina por permalink. La red gana (texto completo + urn fiable) pero
-    conserva company/location del DOM si la red no los trajo.
+    conserva company/location/published del DOM si la red no los trajo.
     """
     merged: dict[str, dict[str, Any]] = {}
     for post in dom_posts:
@@ -1047,6 +1092,11 @@ def _linkedin_hiring_merge_posts(
                 post["location"] = existing["location"]
             if not post.get("company") and existing.get("company"):
                 post["company"] = existing["company"]
+            # Voyager a menudo mete el headline del actor en subDescription;
+            # el stamp relativo (16m / 2d) suele venir solo del DOM.
+            if not _linkedin_hiring_parse_published(str(post.get("published") or "")):
+                if existing.get("published"):
+                    post["published"] = existing["published"]
         merged[post["permalink"]] = post
     return list(merged.values())
 
@@ -1622,6 +1672,13 @@ def scrape_linkedin_hiring(
     """
     filters = _normalize_filters(filters)
     queries = _search_queries(profile, filters)
+    user_locations = [loc for loc in _locations(profile, filters) if str(loc).strip()]
+    user_country = ""
+    countries = filters.get("countries") or []
+    if countries:
+        user_country = str(countries[0]).strip().lower()
+    elif profile.get("country"):
+        user_country = str(profile.get("country") or "").strip().lower()
     page = _new_page(browser, site="linkedin_hiring")
     try:
         page.context.grant_permissions(
@@ -1638,6 +1695,7 @@ def scrape_linkedin_hiring(
     skipped_no_intent = 0
     skipped_open_to_work = 0
     skipped_query = 0
+    skipped_location = 0
     skipped_no_permalink = 0
     skipped_dup = 0
     js_roots = 0
@@ -1854,6 +1912,7 @@ def scrape_linkedin_hiring(
                 term_skip_intent = 0
                 term_skip_otw = 0
                 term_skip_query = 0
+                term_skip_location = 0
                 term_skip_permalink = 0
                 term_skip_dup = 0
 
@@ -1892,6 +1951,17 @@ def scrape_linkedin_hiring(
                         skipped_query += 1
                         term_skip_query += 1
                         _log_discard("no matchea query", preview, term_skip_query)
+                        continue
+
+                    # Filtro geográfico temprano (India/Bangalore / LATAM estricto)
+                    # para no llenar el soft_cap con posts irrelevantes.
+                    loc_verdict = linkedin_hiring_location_ok(
+                        text, user_country, user_locations
+                    )
+                    if loc_verdict is False:
+                        skipped_location += 1
+                        term_skip_location += 1
+                        _log_discard("ubicación fuera de alcance", preview, term_skip_location)
                         continue
 
                     if not href or not is_linkedin_hiring_permalink(href):
@@ -1943,7 +2013,10 @@ def scrape_linkedin_hiring(
                         else keyword,
                     )
                     published_raw = str(item.get("published") or "")
-                    published_at = _linkedin_hiring_parse_published(published_raw)
+                    published_at = (
+                        _linkedin_hiring_parse_published(published_raw)
+                        or _linkedin_activity_published_at(href)
+                    )
                     location = (
                         str(item.get("location") or "").strip()
                         or _linkedin_hiring_location_from_text(text)
@@ -1977,12 +2050,13 @@ def scrape_linkedin_hiring(
 
                 logger.info(
                     "LinkedIn #Hiring: resumen %r → +%d | −intent=%d −otw=%d "
-                    "−query=%d −permalink=%d −dup=%d | total=%d",
+                    "−query=%d −loc=%d −permalink=%d −dup=%d | total=%d",
                     term,
                     term_kept,
                     term_skip_intent,
                     term_skip_otw,
                     term_skip_query,
+                    term_skip_location,
                     term_skip_permalink,
                     term_skip_dup,
                     len(jobs),
@@ -2000,6 +2074,7 @@ def scrape_linkedin_hiring(
         "skip_intent": skipped_no_intent,
         "skip_open_to_work": skipped_open_to_work,
         "skip_query": skipped_query,
+        "skip_location": skipped_location,
         "skip_permalink": skipped_no_permalink,
         "skip_dup": skipped_dup,
         "bad_permalink_samples": bad_permalink_samples,
@@ -2012,13 +2087,15 @@ def scrape_linkedin_hiring(
         logger.info(
             "LinkedIn #Hiring vacío (cards=%s, roots=%s, voyager=%s, "
             "skip_intent=%s, skip_open_to_work=%s, skip_query=%s, "
-            "skip_permalink=%s, skip_dup=%s, authwall=%s, url=%s, sesión=%s)%s",
+            "skip_location=%s, skip_permalink=%s, skip_dup=%s, "
+            "authwall=%s, url=%s, sesión=%s)%s",
             cards_seen,
             js_roots,
             voyager_posts_seen,
             skipped_no_intent,
             skipped_open_to_work,
             skipped_query,
+            skipped_location,
             skipped_no_permalink,
             skipped_dup,
             hit_authwall,
@@ -2033,12 +2110,14 @@ def scrape_linkedin_hiring(
     else:
         logger.info(
             "LinkedIn #Hiring: listo — %d oferta(s) "
-            "(voyager=%d, −intent=%d −otw=%d −query=%d −permalink=%d −dup=%d)",
+            "(voyager=%d, −intent=%d −otw=%d −query=%d −loc=%d "
+            "−permalink=%d −dup=%d)",
             len(jobs),
             voyager_posts_seen,
             skipped_no_intent,
             skipped_open_to_work,
             skipped_query,
+            skipped_location,
             skipped_no_permalink,
             skipped_dup,
         )
