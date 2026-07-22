@@ -30,7 +30,7 @@ class _FakeClient:
 def _patch_client(monkeypatch, text: str) -> _FakeClient:
     client = _FakeClient(text)
     monkeypatch.setattr(
-        ai_engine, "_active_client_and_model", lambda: (client, "gemini-test")
+        ai_engine, "_active_client_and_models", lambda: (client, ["gemini-test"])
     )
     return client
 
@@ -87,11 +87,12 @@ def test_missing_api_key_raises(monkeypatch):
         has_api_key = False
         google_api_key = ""
         ai_request_timeout_sec = 60
-        gemini_model = "m"
+        model_list = ["m"]
 
     monkeypatch.setattr(ai_engine, "get_settings", lambda: _NoKey())
+    monkeypatch.setattr(ai_engine, "has_runtime_key", lambda: False)
     with pytest.raises(ai_engine.AIEngineError):
-        ai_engine._active_client_and_model()
+        ai_engine._active_client_and_models()
 
 
 def test_generate_json_retries_on_bad_json(monkeypatch):
