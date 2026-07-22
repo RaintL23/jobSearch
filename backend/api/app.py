@@ -58,6 +58,7 @@ from backend.scraping import (
     is_linkedin_hiring_permalink,
     search_jobs,
 )
+from backend.scraping.filters import merge_profile_filters, _normalize_filters
 from backend.core.utils import PDFExtractionError, extract_text_from_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -197,19 +198,38 @@ async def upload_cv(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"profile": profile, "chars_extracted": len(cv_text)}
 
 
-def _prepare_search(payload: SearchRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+@app.post("/resolve-filters")
+async def resolve_filters(payload: SearchRequest) -> dict[str, Any]:
+    """
+    Resuelve los filtros efectivos del backend a partir del perfil.
+
+    `profile.filters` del JSON completa lo que venga vacío en `filters`
+    (p. ej. antigüedad, modalidad, idiomas). La UI usa esto para sincronizar
+    el panel con la config del backend.
+    """
+    _profile, filters_dict = _filters_from_payload(payload)
+    return {"filters": _normalize_filters(filters_dict)}
+
+
+def _filters_from_payload(payload: SearchRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Perfil + filtros efectivos (`profile.filters` como defaults del backend)."""
     profile_dict = payload.profile.model_dump()
-    filters_dict = payload.filters.model_dump()
+    filters_dict = merge_profile_filters(profile_dict, payload.filters.model_dump())
 
     queries = list(filters_dict.get("queries") or [])
     if filters_dict.get("query"):
         queries.append(filters_dict["query"])
     queries = [q.strip() for q in queries if str(q).strip()]
     filters_dict["queries"] = queries
+    return profile_dict, filters_dict
+
+
+def _prepare_search(payload: SearchRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+    profile_dict, filters_dict = _filters_from_payload(payload)
 
     has_roles = bool(profile_dict.get("roles"))
     has_skills = bool(profile_dict.get("skills"))
-    if not queries and not has_roles and not has_skills:
+    if not filters_dict.get("queries") and not has_roles and not has_skills:
         raise HTTPException(
             status_code=400,
             detail="Indica al menos un texto de búsqueda, o roles/skills en el perfil.",

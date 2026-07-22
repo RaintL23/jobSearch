@@ -499,7 +499,57 @@ function setProfileReady(ready, statusMsg, { collapse = false } = {}) {
   updateFooterNote();
 }
 
-function applyProfile(obj, okMsg) {
+function applyFiltersFromBackend(filters) {
+  if (!filters || typeof filters !== "object") return;
+  const q = document.getElementById("filterQueries");
+  const queries = filters.queries || [];
+  if (Array.isArray(queries) && queries.length) q.value = queries.join("\n");
+
+  const loc = document.getElementById("filterLocations");
+  const locations = filters.locations || [];
+  if (Array.isArray(locations) && locations.length) loc.value = locations.join("\n");
+
+  const minEl = document.getElementById("filterSalaryMin");
+  const maxEl = document.getElementById("filterSalaryMax");
+  if (minEl && filters.salary_min_usd != null && filters.salary_min_usd !== "") {
+    minEl.value = String(filters.salary_min_usd);
+  }
+  if (maxEl && filters.salary_max_usd != null && filters.salary_max_usd !== "") {
+    maxEl.value = String(filters.salary_max_usd);
+  }
+
+  const multiMap = [
+    ["posted_within", multiFilters.posted],
+    ["sources", multiFilters.sources],
+    ["experience_levels", multiFilters.experience],
+    ["work_modes", multiFilters.workMode],
+    ["posting_languages", multiFilters.postingLang],
+    ["required_languages", multiFilters.requiredLang],
+  ];
+  for (const [key, ms] of multiMap) {
+    const vals = filters[key];
+    if (Array.isArray(vals) && vals.length) {
+      ms.setValues(vals.map((v) => String(v).toLowerCase()));
+    }
+  }
+  updateStep2Summary();
+  updateFooterNote();
+}
+
+async function syncFiltersFromBackend(profile) {
+  try {
+    const res = await fetch(`${API_BASE}/resolve-filters`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || {}, filters: {} }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    if (data.filters) applyFiltersFromBackend(data.filters);
+  } catch (_) { /* sin backend: el panel queda como está */ }
+}
+
+async function applyProfile(obj, okMsg) {
   lastProfile = obj;
   saveProfileToStorage(obj);
   profileJson.value = JSON.stringify(obj, null, 2);
@@ -510,6 +560,7 @@ function applyProfile(obj, okMsg) {
   }
   const loc = document.getElementById("filterLocations");
   if (!loc.value.trim() && obj.location) loc.value = obj.location;
+  await syncFiltersFromBackend(obj);
   setProfileReady(true, okMsg || "Perfil válido · cargado", { collapse: true });
   updateStep2Summary();
 }
@@ -1023,7 +1074,7 @@ btnProcess.addEventListener("click", async () => {
     const res = await fetch(`${API_BASE}/upload-cv`, { method: "POST", body: form });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
-    applyProfile(data.profile, "Perfil válido · extraído del CV");
+    await applyProfile(data.profile, "Perfil válido · extraído del CV");
     show(document.getElementById("step1Ok"), "CV procesado.");
   } catch (err) {
     show(document.getElementById("step1Error"), err.message || String(err));
@@ -1039,7 +1090,7 @@ document.getElementById("btnLoadJson").addEventListener("click", async () => {
   try {
     const data = JSON.parse(await file.text());
     if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("JSON inválido.");
-    applyProfile(data, `Perfil válido · ${file.name}`);
+    await applyProfile(data, `Perfil válido · ${file.name}`);
     show(document.getElementById("step1Ok"), "JSON cargado.");
   } catch (err) {
     setProfileReady(false);
@@ -1047,15 +1098,15 @@ document.getElementById("btnLoadJson").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("btnTemplate").addEventListener("click", () => {
-  applyProfile({ ...PROFILE_TEMPLATE }, "Perfil válido · plantilla");
+document.getElementById("btnTemplate").addEventListener("click", async () => {
+  await applyProfile({ ...PROFILE_TEMPLATE }, "Perfil válido · plantilla");
   show(document.getElementById("step1Ok"), "Plantilla cargada.");
   setStep1Collapsed(false);
 });
 
-document.getElementById("btnValidate").addEventListener("click", () => {
+document.getElementById("btnValidate").addEventListener("click", async () => {
   try {
-    applyProfile(getProfile(), "Perfil válido · cargado");
+    await applyProfile(getProfile(), "Perfil válido · cargado");
     show(document.getElementById("step1Ok"), "Perfil válido.");
     show(document.getElementById("step1Error"), "");
   } catch (err) {
@@ -1602,7 +1653,7 @@ document.getElementById("authSessionsBody").addEventListener("click", async (e) 
   try {
     const obj = JSON.parse(raw);
     if (obj && typeof obj === "object" && !Array.isArray(obj)) {
-      applyProfile(obj, "Perfil válido · restaurado");
+      void applyProfile(obj, "Perfil válido · restaurado");
     }
   } catch (e) {}
 })();

@@ -66,6 +66,55 @@ def test_search_happy_path(monkeypatch, client):
     assert body["sources"]["remotive"]["ok"] is True
 
 
+def test_resolve_filters_from_profile(client):
+    r = client.post(
+        "/resolve-filters",
+        json={
+            "profile": {
+                "roles": [".NET Developer"],
+                "filters": {
+                    "posted_within": ["24h"],
+                    "work_modes": ["remote"],
+                    "posting_languages": ["en", "es"],
+                },
+            },
+            "filters": {},
+        },
+    )
+    assert r.status_code == 200
+    filters = r.json()["filters"]
+    assert filters["posted_within"] == ["24h"]
+    assert filters["work_modes"] == ["remote"]
+    assert filters["posting_languages"] == ["en", "es"]
+
+
+def test_search_applies_profile_filters(monkeypatch, client):
+    seen = {}
+
+    def fake_search(profile, max_jobs, filters, on_progress=None):
+        seen["filters"] = filters
+        return {"jobs": [], "sources": {}}
+
+    monkeypatch.setattr(main, "search_jobs", fake_search)
+    r = client.post(
+        "/search-jobs",
+        json={
+            "profile": {
+                "roles": ["Backend"],
+                "skills": ["C#"],
+                "filters": {
+                    "posted_within": ["24h"],
+                    "work_modes": ["remote"],
+                },
+            },
+            "filters": {},
+        },
+    )
+    assert r.status_code == 200
+    assert seen["filters"]["posted_within"] == ["24h"]
+    assert seen["filters"]["work_modes"] == ["remote"]
+
+
 def test_generate_cover_letter(monkeypatch, client):
     monkeypatch.setattr(main, "generate_cover_letter", lambda p, j: "Carta de prueba")
     r = client.post(

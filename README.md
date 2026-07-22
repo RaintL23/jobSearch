@@ -106,6 +106,18 @@ Sin API Key no podés procesar el CV ni generar cover letters / emails.
 
 El perfil mejora el match y rellena roles/ubicaciones por defecto. Podés buscar sin perfil, pero el % de match no se calcula.
 
+Opcionalmente incluí un bloque `filters` en el JSON del perfil. Eso **configura los filtros del backend** (no se leen en el navegador a mano): al validar/cargar el perfil la UI pide al backend los filtros resueltos, y en cada búsqueda se mezclan con lo del panel (lo vacío se completa desde el perfil):
+
+```json
+"filters": {
+  "posted_within": ["24h"],
+  "work_modes": ["remote"],
+  "posting_languages": ["en", "es"],
+  "salary_min_usd": 2000,
+  "salary_max_usd": 6000
+}
+```
+
 **Opción A — Desde PDF**
 
 1. En el panel izquierdo, abrí **1 · Perfil CV**.
@@ -288,6 +300,7 @@ El frontend se sirve estático: `index.html` referencia `/static/styles.css` y `
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | `POST` | `/upload-cv` | Extrae perfil del PDF con Gemini. |
+| `POST` | `/resolve-filters` | Resuelve filtros efectivos (`profile.filters` + request). |
 | `POST` | `/search-jobs-stream` | Búsqueda con progreso SSE. |
 | `POST` | `/search-jobs` | Búsqueda síncrona. |
 | `POST` | `/generate-cover-letter` | Cover letter con Gemini. |

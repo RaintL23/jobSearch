@@ -28,6 +28,20 @@ def _split_multi(value: Any) -> list[str]:
     return [p.strip() for p in re.split(r"[\n,;|]+", text) if p.strip()]
 
 
+_LIST_FILTER_KEYS = (
+    "queries",
+    "locations",
+    "posted_within",
+    "experience_levels",
+    "work_modes",
+    "countries",
+    "sources",
+    "posting_languages",
+    "required_languages",
+)
+_SCALAR_FILTER_KEYS = ("salary_min_usd", "salary_max_usd")
+
+
 def _normalize_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
     f = dict(filters or {})
     queries = _split_multi(f.get("queries") or f.get("query"))
@@ -64,6 +78,40 @@ def _normalize_filters(filters: dict[str, Any] | None) -> dict[str, Any]:
         "posting_languages": _multi("posting_languages", "posting_language"),
         "required_languages": _multi("required_languages", "required_language"),
     }
+
+
+def merge_profile_filters(
+    profile: dict[str, Any] | None,
+    filters: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Aplica `profile.filters` como defaults del backend.
+
+    Los valores no vacíos del request (UI) ganan; lo que falte se completa
+    desde el bloque `filters` del perfil JSON.
+    """
+    request = dict(filters or {})
+    raw_profile_filters = (profile or {}).get("filters")
+    if not isinstance(raw_profile_filters, dict) or not raw_profile_filters:
+        return request
+
+    defaults = _normalize_filters(raw_profile_filters)
+    out = dict(request)
+
+    for key in _LIST_FILTER_KEYS:
+        current = out.get(key)
+        if isinstance(current, list):
+            empty = not current
+        else:
+            empty = current in (None, "", "any")
+        if empty and defaults.get(key):
+            out[key] = list(defaults[key])
+
+    for key in _SCALAR_FILTER_KEYS:
+        if out.get(key) in (None, "") and defaults.get(key) is not None:
+            out[key] = defaults[key]
+
+    return out
 
 
 def _country_codes(profile: dict[str, Any], filters: dict[str, Any]) -> list[str]:
