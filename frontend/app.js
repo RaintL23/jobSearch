@@ -1473,6 +1473,9 @@ function closeModal() { coverModal.classList.remove("open"); }
 document.getElementById("btnCloseModal").addEventListener("click", closeModal);
 document.getElementById("btnCloseModal2").addEventListener("click", closeModal);
 coverModal.addEventListener("click", (e) => { if (e.target === coverModal) closeModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && coverModal.classList.contains("open")) closeModal();
+});
 document.getElementById("btnCopyCover").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(coverBody.textContent || ""); } catch (_) {}
 });
